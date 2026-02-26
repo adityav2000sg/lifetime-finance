@@ -434,7 +434,7 @@ export default function LifetimeFinanceHub() {
               {showAddForm === 'expense' && (
                 <ExpenseForm
                   form={forms.expense}
-                  setForm={(form) => setForms({ ...forms, expense: form })}
+                  setForm={(form: any) => setForms({ ...forms, expense: form })}
                   onSubmit={addExpense}
                   onCancel={() => setShowAddForm('')}
                   categories={expenseCategories}
@@ -482,7 +482,7 @@ export default function LifetimeFinanceHub() {
               {showAddForm === 'subscription' && (
                 <SubscriptionForm
                   form={forms.subscription}
-                  setForm={(form) => setForms({ ...forms, subscription: form })}
+setForm={(form: any) => setForms({ ...forms, subscription: form })}
                   onSubmit={addSubscription}
                   onCancel={() => setShowAddForm('')}
                 />
@@ -529,7 +529,7 @@ export default function LifetimeFinanceHub() {
               {showAddForm === 'investment' && (
                 <InvestmentForm
                   form={forms.investment}
-                  setForm={(form) => setForms({ ...forms, investment: form })}
+setForm={(form: any) => setForms({ ...forms, investment: form })}
                   onSubmit={addInvestment}
                   onCancel={() => setShowAddForm('')}
                   types={investmentTypes}
@@ -577,7 +577,7 @@ export default function LifetimeFinanceHub() {
               {showAddForm === 'goal' && (
                 <GoalForm
                   form={forms.goal}
-                  setForm={(form) => setForms({ ...forms, goal: form })}
+setForm={(form: any) => setForms({ ...forms, goal: form })}
                   onSubmit={addGoal}
                   onCancel={() => setShowAddForm('')}
                   categories={goalCategories}
@@ -638,7 +638,7 @@ export default function LifetimeFinanceHub() {
               {showAddForm === 'income' && (
                 <IncomeForm
                   form={forms.income}
-                  setForm={(form) => setForms({ ...forms, income: form })}
+setForm={(form: any) => setForms({ ...forms, income: form })}
                   onSubmit={addIncome}
                   onCancel={() => setShowAddForm('')}
                 />
