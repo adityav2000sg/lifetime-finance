@@ -3,7 +3,7 @@ import { Plus, Trash2, ChevronLeft, ChevronRight, Download, TrendingUp, Trending
 
 export default function LifetimeFinanceHub() {
   const [currentMonth, setCurrentMonth] = useState(new Date());
-const [data, setData] = useState<any>({
+  const [data, setData] = useState({
     months: {} // { "2024-12": { expenses: [], subscriptions: [], investments: [], goals: [], income: [], monthNotes: '' } }
   });
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -11,7 +11,7 @@ const [data, setData] = useState<any>({
   const [viewMode, setViewMode] = useState('current'); // 'current' or 'history'
 
   // Get or create month key
-  const getMonthKey = (date: Date) => {
+  const getMonthKey = (date) => {
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
   };
 
@@ -56,7 +56,7 @@ const [data, setData] = useState<any>({
   }, [data]);
 
   // Update month data
-const updateMonthData = (updater: any) => {
+  const updateMonthData = (updater) => {
     setData({
       ...data,
       months: {
