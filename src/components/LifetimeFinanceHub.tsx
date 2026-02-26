@@ -11,7 +11,7 @@ export default function LifetimeFinanceHub() {
   const [viewMode, setViewMode] = useState('current'); // 'current' or 'history'
 
   // Get or create month key
-  const getMonthKey = (date) => {
+  const getMonthKey = (date: Date) => {
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
   };
 
