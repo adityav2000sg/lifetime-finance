@@ -3,7 +3,7 @@ import { Plus, Trash2, ChevronLeft, ChevronRight, Download, TrendingUp, Trending
 
 export default function LifetimeFinanceHub() {
   const [currentMonth, setCurrentMonth] = useState(new Date());
-  const [data, setData] = useState({
+const [data, setData] = useState<any>({
     months: {} // { "2024-12": { expenses: [], subscriptions: [], investments: [], goals: [], income: [], monthNotes: '' } }
   });
   const [activeTab, setActiveTab] = useState('dashboard');
