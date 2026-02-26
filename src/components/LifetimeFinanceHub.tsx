@@ -56,7 +56,7 @@ const [data, setData] = useState<any>({
   }, [data]);
 
   // Update month data
-  const updateMonthData = (updater) => {
+const updateMonthData = (updater: any) => {
     setData({
       ...data,
       months: {
