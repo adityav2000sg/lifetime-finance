@@ -16,7 +16,7 @@ function parseSpace(row: SpaceRow | null) {
 }
 
 async function findSpaces(userId: string, email: string) {
-  const db = getD1();
+  const db = await getD1();
   await db.prepare(`UPDATE finance_space_members SET user_id = ?, status = 'active' WHERE lower(email) = lower(?) AND (user_id IS NULL OR user_id = ?)`)
     .bind(userId, email, userId).run();
   const personal = await db.prepare(`SELECT id, type, data_json FROM finance_spaces WHERE type = 'personal' AND owner_user_id = ? LIMIT 1`)
@@ -66,8 +66,9 @@ export async function GET() {
   try {
     await ensureFinanceSchema();
     const { personal, household } = await findSpaces(user.userId, user.email);
+    const db = await getD1();
     const members = household
-      ? (await getD1().prepare(`SELECT email, display_name, role, status FROM finance_space_members WHERE space_id = ? ORDER BY role = 'owner' DESC, created_at ASC`).bind(household.id).all<MemberRow>()).results
+      ? (await db.prepare(`SELECT email, display_name, role, status FROM finance_space_members WHERE space_id = ? ORDER BY role = 'owner' DESC, created_at ASC`).bind(household.id).all<MemberRow>()).results
       : [];
     return Response.json({ data: mergeSpaces(parseSpace(personal), parseSpace(household)), members });
   } catch (error) { return jsonError(error); }
@@ -84,7 +85,7 @@ export async function POST(request: Request) {
     const encoded = JSON.stringify(data);
     if (encoded.length > 2_000_000) return Response.json({ error: "Workspace is too large" }, { status: 413 });
     await ensureFinanceSchema();
-    const db = getD1();
+    const db = await getD1();
     let { personal, household } = await findSpaces(user.userId, user.email);
     if (!personal) {
       const id = crypto.randomUUID();
