@@ -1,4 +1,4 @@
-import { getChatGPTUser } from "@/app/chatgpt-auth";
+import { LOCAL_USER } from "@/app/local-identity";
 import { ensureFinanceSchema, getD1 } from "../../../../db";
 import type { FinanceData, SpaceId } from "@/lib/finance";
 
@@ -61,8 +61,7 @@ function splitSpace(data: FinanceData, space: SpaceId) {
 }
 
 export async function GET() {
-  const user = await getChatGPTUser();
-  if (!user) return Response.json({ error: "Sign in required" }, { status: 401 });
+  const user = LOCAL_USER;
   try {
     await ensureFinanceSchema();
     const { personal, household } = await findSpaces(user.userId, user.email);
@@ -75,8 +74,7 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const user = await getChatGPTUser();
-  if (!user) return Response.json({ error: "Sign in required" }, { status: 401 });
+  const user = LOCAL_USER;
   try {
     const data = await request.json() as FinanceData;
     if (data.version !== 3 || !Array.isArray(data.accounts) || !Array.isArray(data.transactions)) {

@@ -324,11 +324,7 @@ export function createSeedData(): FinanceData {
       { id: "event-japan", name: "Japan in spring", amount: 12000, date: isoMonthsAgo(-8, 12), kind: "travel", space: "household", includeInPlan: true, note: "Flights, hotels, food and shopping" },
       { id: "event-reno", name: "Kitchen refresh", amount: 18000, date: isoMonthsAgo(-15, 8), kind: "home", space: "household", includeInPlan: true },
     ],
-    inbox: [
-      { id: "inbox-1", description: "Yochi", amount: 13.8, date: isoDaysAgo(0), source: "screenshot", suggestedType: "expense", suggestedCategory: "Food & dining", suggestedAccountId: "revolut-card", space: "personal", confidence: 0.91, status: "review", reason: "Recognised from a payment notification" },
-      { id: "inbox-2", description: "DBS → HSBC", amount: 5000, date: isoDaysAgo(1), source: "bank", suggestedType: "transfer", suggestedCategory: "Transfer", suggestedAccountId: "dbs-everyday", space: "personal", confidence: 0.98, status: "review", reason: "Possible transfer between two accounts you own" },
-      { id: "inbox-3", description: "Cold Storage", amount: 84.25, date: isoDaysAgo(2), source: "receipt", suggestedType: "expense", suggestedCategory: "Groceries", suggestedAccountId: "dbs-joint", space: "household", confidence: 0.87, status: "review", reason: "Receipt matched to a known merchant" },
-    ],
+    inbox: [],
   };
 }
 
@@ -350,6 +346,28 @@ export function normalizeFinanceData(input: Partial<FinanceData>, fallback: Fina
 
 export function monthlyEquivalent(item: RecurringItem) {
   return item.cadence === "monthly" ? item.amount : item.cadence === "quarterly" ? item.amount / 3 : item.amount / 12;
+}
+
+// Applies a transaction to account balances. Pass direction -1 to reverse it,
+// which is how edits (reverse the old, apply the new) and deletes are handled.
+export function applyTransaction(accounts: Account[], transaction: Transaction, direction: 1 | -1 = 1) {
+  return accounts.map((account) => {
+    if (transaction.type === "expense" && account.id === transaction.accountId) {
+      return { ...account, balance: account.balance - transaction.amount * direction };
+    }
+    if (transaction.type === "income" && account.id === transaction.accountId) {
+      return { ...account, balance: account.balance + transaction.amount * direction };
+    }
+    if (transaction.type === "transfer") {
+      if (account.id === transaction.accountId) {
+        return { ...account, balance: account.balance - transaction.amount * direction };
+      }
+      if (account.id === transaction.transferAccountId) {
+        return { ...account, balance: account.balance + transaction.amount * direction };
+      }
+    }
+    return account;
+  });
 }
 
 export interface FinanceForecast {
@@ -383,12 +401,20 @@ export function buildForecast(data: FinanceData, scope: ViewScope): FinanceForec
     if (item.type === "expense") value.spending += item.amount;
     monthTotals.set(key, value);
   });
-  const completeishMonths = [...monthTotals.values()].filter((item) => item.income > 0 || item.spending > 0).slice(-6);
+  // Month keys are YYYY-MM, so sorting them as strings orders them
+  // chronologically. Without this the "last six months" would really be the
+  // last six months *encountered*, which depends on transaction insertion order.
+  const completeishMonths = [...monthTotals.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([, value]) => value)
+    .filter((item) => item.income > 0 || item.spending > 0)
+    .slice(-6);
   const divisor = Math.max(1, completeishMonths.length);
   const averageIncome = completeishMonths.reduce((sum, item) => sum + item.income, 0) / divisor;
   const averageSpending = completeishMonths.reduce((sum, item) => sum + item.spending, 0) / divisor;
   const recurringCost = inScope(data.recurring, scope).filter((item) => item.active).reduce((sum, item) => sum + monthlyEquivalent(item), 0);
-  const monthlySurplus = Math.max(0, averageIncome - averageSpending);
+  // Not floored at zero: spending more than you earn must report as a deficit.
+  const monthlySurplus = averageIncome - averageSpending;
   const liquidBalance = accounts.filter((item) => ["checking", "savings", "cash"].includes(item.type)).reduce((sum, item) => sum + Math.max(0, item.balance), 0);
   const emergencyMonths = averageSpending > 0 ? liquidBalance / averageSpending : 0;
   const monthlyGoalCommitments = inScope(data.goals, scope).reduce((sum, goal) => sum + (goal.monthlyContribution || 0), 0);

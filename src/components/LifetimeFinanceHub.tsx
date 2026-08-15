@@ -5,7 +5,6 @@ import {
   ArrowDownLeft,
   ArrowLeftRight,
   ArrowUpRight,
-  Bell,
   CalendarDays,
   Cloud,
   CloudOff,
@@ -21,20 +20,17 @@ import {
   FileSpreadsheet,
   Gauge,
   Home,
-  Inbox,
   Landmark,
   Layers3,
   LayoutDashboard,
   Leaf,
   List,
-  LogOut,
   Menu,
   MessageCircle,
   Mic,
   PiggyBank,
   Plus,
   Repeat2,
-  ReceiptText,
   Search,
   Settings2,
   ShieldCheck,
@@ -56,7 +52,6 @@ import {
   FinanceData,
   FinanceForecast,
   Goal,
-  InboxItem,
   PlannedEvent,
   RecurringItem,
   SpaceId,
@@ -64,6 +59,7 @@ import {
   TransactionType,
   ViewScope,
   accountTypeLabels,
+  applyTransaction,
   buildForecast,
   categoryColors,
   createSeedData,
@@ -76,9 +72,10 @@ import {
   normalizeFinanceData,
   uid,
 } from "@/lib/finance";
+import { ImportReport, describeImport, importTransactions } from "@/lib/import";
 
 type ViewId = "today" | "money" | "future" | "coach" | "household";
-type MoneySection = "snapshot" | "activity" | "accounts" | "plan" | "inbox";
+type MoneySection = "snapshot" | "activity" | "accounts" | "plan";
 type ModalId = "capture" | "transaction" | "account" | "goal" | "event" | "recurring" | "import" | "household" | null;
 type ActivityMode = "feed" | "ledger";
 type ActivityFilter = "all" | TransactionType;
@@ -126,27 +123,7 @@ function createViewerSeed(viewer: Viewer) {
   };
 }
 
-function applyTransaction(accounts: Account[], transaction: Transaction, direction: 1 | -1 = 1) {
-  return accounts.map((account) => {
-    if (transaction.type === "expense" && account.id === transaction.accountId) {
-      return { ...account, balance: account.balance - transaction.amount * direction };
-    }
-    if (transaction.type === "income" && account.id === transaction.accountId) {
-      return { ...account, balance: account.balance + transaction.amount * direction };
-    }
-    if (transaction.type === "transfer") {
-      if (account.id === transaction.accountId) {
-        return { ...account, balance: account.balance - transaction.amount * direction };
-      }
-      if (account.id === transaction.transferAccountId) {
-        return { ...account, balance: account.balance + transaction.amount * direction };
-      }
-    }
-    return account;
-  });
-}
-
-export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Viewer; signOutPath: string }) {
+export default function LifetimeFinanceHub({ viewer }: { viewer: Viewer }) {
   const [data, setData] = useState<FinanceData>(() => createViewerSeed(viewer));
   const [scope, setScope] = useState<ViewScope>("all");
   const [activeView, setActiveView] = useState<ViewId>("today");
@@ -242,7 +219,6 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
   const scopedRecurring = useMemo(() => inScope(data.recurring, scope), [data.recurring, scope]);
   const scopedPlans = useMemo(() => inScope(data.spendingPlans, scope), [data.spendingPlans, scope]);
   const scopedEvents = useMemo(() => inScope(data.plannedEvents, scope), [data.plannedEvents, scope]);
-  const scopedInbox = useMemo(() => inScope(data.inbox, scope), [data.inbox, scope]);
   const forecast = useMemo(() => buildForecast(data, scope), [data, scope]);
   const monthTransactions = useMemo(
     () => scopedTransactions.filter((transaction) => monthKey(transaction.date) === selectedMonth),
@@ -282,25 +258,6 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
     });
   }, [scopedTransactions, search, selectedMonth, activityFilter, activityPeriod]);
 
-  const monthSeries = useMemo(() => {
-    return Array.from({ length: 6 }, (_, index) => {
-      const date = new Date();
-      date.setDate(1);
-      date.setMonth(date.getMonth() - (5 - index));
-      const key = monthKey(date);
-      const transactions = scopedTransactions.filter((item) => monthKey(item.date) === key);
-      const income = transactions.filter((item) => item.type === "income").reduce((sum, item) => sum + item.amount, 0);
-      const spending = transactions.filter((item) => item.type === "expense").reduce((sum, item) => sum + item.amount, 0);
-      return {
-        key,
-        label: date.toLocaleDateString("en-SG", { month: "short" }),
-        income,
-        spending,
-      };
-    });
-  }, [scopedTransactions]);
-
-  const maxSeriesValue = Math.max(1, ...monthSeries.flatMap((month) => [month.income, month.spending]));
   const currentScope = scopeOptions.find((option) => option.id === scope) || scopeOptions[2];
   const selectedMonthLabel = new Date(`${selectedMonth}-01T12:00:00`).toLocaleDateString("en-SG", { month: "long", year: "numeric" });
 
@@ -441,21 +398,6 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
     notify("Future plan added to your forecast.");
   }
 
-  function approveInboxItem(item: InboxItem) {
-    if (item.suggestedType === "transfer") {
-      const destination = data.accounts.find((account) => account.id !== item.suggestedAccountId && account.institution !== data.accounts.find((source) => source.id === item.suggestedAccountId)?.institution);
-      openCaptureDraft({ type: "transfer", amount: item.amount, description: item.description, date: item.date, accountId: item.suggestedAccountId, transferAccountId: destination?.id, source: item.source === "receipt" ? "receipt" : "bank" });
-      return;
-    }
-    openCaptureDraft({ type: item.suggestedType, amount: item.amount, description: item.description, date: item.date, category: item.suggestedCategory, accountId: item.suggestedAccountId, space: item.space, source: item.source === "receipt" ? "receipt" : "bank" });
-    setData((current) => ({ ...current, inbox: current.inbox.map((entry) => entry.id === item.id ? { ...entry, status: "approved" } : entry) }));
-  }
-
-  function dismissInboxItem(id: string) {
-    setData((current) => ({ ...current, inbox: current.inbox.map((item) => item.id === id ? { ...item, status: "dismissed" } : item) }));
-    notify("Inbox item dismissed.");
-  }
-
   function saveSpendingPlan(category: string, monthlyLimit: number, planScope: SpaceId) {
     setData((current) => {
       const existing = current.spendingPlans.find((item) => item.category === category && item.space === planScope);
@@ -548,7 +490,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
         <div className="profile-chip">
           <span className="avatar">{data.profile.name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</span>
           <div><strong>{data.profile.name}</strong><small>{viewer.email}</small></div>
-          <span className="profile-actions"><button className="signout-button" onClick={() => { setModal("household"); setMobileMenu(false); }} aria-label="Household settings" title="Household settings"><Settings2 size={17} /></button><a className="signout-button" href={signOutPath} aria-label="Sign out of ChatGPT" title="Sign out"><LogOut size={17} /></a></span>
+          <span className="profile-actions"><button className="signout-button" onClick={() => { setModal("household"); setMobileMenu(false); }} aria-label="Household settings" title="Household settings"><Settings2 size={17} /></button></span>
         </div>
       </aside>
 
@@ -581,7 +523,6 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
               {syncStatus === "offline" ? <CloudOff size={15} /> : <Cloud size={15} />}
               <span>{syncStatus === "saved" ? "Saved" : syncStatus === "saving" ? "Saving" : syncStatus === "offline" ? "On device" : "Loading"}</span>
             </span>
-            <button className="icon-button" onClick={() => notify("You’re all caught up.")} aria-label="Notifications"><Bell size={19} /><span className="notification-dot" /></button>
             <button className="primary-button compact-button capture-button" onClick={() => setModal("capture")}><Mic size={18} /> Capture</button>
           </div>
         </header>
@@ -629,7 +570,6 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
               transactions={visibleTransactions}
               monthTransactions={monthTransactions}
               plans={scopedPlans}
-              inbox={scopedInbox}
               netWorth={netWorth}
               monthIncome={monthIncome}
               monthSpending={monthSpending}
@@ -651,8 +591,6 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
               setFilter={setActivityFilter}
               period={activityPeriod}
               setPeriod={setActivityPeriod}
-              onApproveInbox={approveInboxItem}
-              onDismissInbox={dismissInboxItem}
               onSavePlan={saveSpendingPlan}
               onExport={exportData}
               onReset={resetSample}
@@ -686,7 +624,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
           )}
 
           {activeView === "household" && (
-            <HouseholdView data={data} accounts={scopedAccounts} members={householdMembers} onSetup={() => setModal("household")} onEditAccount={openEditAccount} />
+            <HouseholdView data={data} accounts={scopedAccounts} members={householdMembers} viewerEmail={viewer.email} onSetup={() => setModal("household")} onEditAccount={openEditAccount} />
           )}
         </main>
       </div>
@@ -795,9 +733,9 @@ function Overview({
             <p className="hero-copy">Here’s how {scopeCopy} is growing.</p>
           </div>
           <div className="hero-balance">
-            <div className="hero-label-row"><span>{scopeLabel} net worth</span><span className="live-pill"><i /> Live overview</span></div>
+            <div className="hero-label-row"><span>{scopeLabel} net worth</span><span className="live-pill"><i /> {accounts.length} account{accounts.length === 1 ? "" : "s"}</span></div>
             <strong>{formatMoney(netWorth)}</strong>
-            <p><TrendingUp size={16} /> Up 4.8% over the last 90 days</p>
+            <p>{monthCashFlow >= 0 ? <TrendingUp size={16} /> : <ArrowUpRight size={16} />} {monthCashFlow >= 0 ? "+" : "−"}{formatMoney(Math.abs(monthCashFlow))} net cash flow in {selectedMonthLabel}</p>
           </div>
         </div>
         <div className="hero-actions">
@@ -900,7 +838,7 @@ function Overview({
   );
 }
 
-function MoneyView({ section, setSection, accounts, allAccounts, transactions, monthTransactions, plans, inbox, netWorth, monthIncome, monthSpending, search, setSearch, onAdd, onImport, onDelete, onEditTransaction, onAddAccount, onEditAccount, selectedMonthLabel, selectedMonth, setSelectedMonth, shiftMonth, mode, setMode, filter, setFilter, period, setPeriod, onApproveInbox, onDismissInbox, onSavePlan, onExport, onReset, scope }: {
+function MoneyView({ section, setSection, accounts, allAccounts, transactions, monthTransactions, plans, netWorth, monthIncome, monthSpending, search, setSearch, onAdd, onImport, onDelete, onEditTransaction, onAddAccount, onEditAccount, selectedMonthLabel, selectedMonth, setSelectedMonth, shiftMonth, mode, setMode, filter, setFilter, period, setPeriod, onSavePlan, onExport, onReset, scope }: {
   section: MoneySection;
   setSection: (section: MoneySection) => void;
   accounts: Account[];
@@ -908,7 +846,6 @@ function MoneyView({ section, setSection, accounts, allAccounts, transactions, m
   transactions: Transaction[];
   monthTransactions: Transaction[];
   plans: FinanceData["spendingPlans"];
-  inbox: InboxItem[];
   netWorth: number;
   monthIncome: number;
   monthSpending: number;
@@ -930,8 +867,6 @@ function MoneyView({ section, setSection, accounts, allAccounts, transactions, m
   setFilter: (filter: ActivityFilter) => void;
   period: ActivityPeriod;
   setPeriod: (period: ActivityPeriod) => void;
-  onApproveInbox: (item: InboxItem) => void;
-  onDismissInbox: (id: string) => void;
   onSavePlan: (category: string, amount: number, scope: SpaceId) => void;
   onExport: () => void;
   onReset: () => void;
@@ -942,11 +877,9 @@ function MoneyView({ section, setSection, accounts, allAccounts, transactions, m
     { id: "activity", label: "Activity", icon: ArrowLeftRight },
     { id: "accounts", label: "Accounts", icon: WalletCards },
     { id: "plan", label: "Spending plan", icon: PiggyBank },
-    { id: "inbox", label: "Inbox", icon: Inbox, count: inbox.filter((item) => item.status === "review").length },
   ];
   const assets = accounts.filter((account) => account.balance >= 0);
   const liabilities = accounts.filter((account) => account.balance < 0);
-  const reviewItems = inbox.filter((item) => item.status === "review");
 
   return (
     <div className="page-stack">
@@ -963,7 +896,7 @@ function MoneyView({ section, setSection, accounts, allAccounts, transactions, m
           <div className="money-total-card"><p className="eyebrow">Net worth</p><strong>{formatMoney(netWorth)}</strong><span>Assets {formatMoney(assets.reduce((sum, item) => sum + item.balance, 0))} · Liabilities {formatMoney(Math.abs(liabilities.reduce((sum, item) => sum + item.balance, 0)))}</span></div>
           <div className="money-mini-card"><span><ArrowDownLeft size={17} /> Income</span><strong>{formatMoney(monthIncome)}</strong><small>{selectedMonthLabel}</small></div>
           <div className="money-mini-card"><span><ArrowUpRight size={17} /> Spending</span><strong>{formatMoney(monthSpending)}</strong><small>Transfers excluded</small></div>
-          <button className="money-mini-card actionable-card" onClick={() => setSection("inbox")}><span><Inbox size={17} /> Needs review</span><strong>{reviewItems.length}</strong><small>Keep the ledger trustworthy</small></button>
+          <button className="money-mini-card actionable-card" onClick={() => setSection("activity")}><span><ArrowLeftRight size={17} /> Transactions</span><strong>{monthTransactions.length}</strong><small>{selectedMonthLabel}</small></button>
         </section>
         <div className="dashboard-grid">
           <section className="panel accounts-panel">
@@ -978,17 +911,12 @@ function MoneyView({ section, setSection, accounts, allAccounts, transactions, m
             <SpendingPlanList plans={plans} transactions={monthTransactions} compact onSave={onSavePlan} scope={scope} />
           </section>
         </div>
-        <section className="panel inbox-panel">
-          <PanelHeading eyebrow="Financial inbox" title="New information, before it changes your story" action="Review all" onAction={() => setSection("inbox")} />
-          <InboxList items={reviewItems.slice(0, 3)} accounts={allAccounts} onApprove={onApproveInbox} onDismiss={onDismissInbox} />
-        </section>
         <section className="data-controls"><div><p className="eyebrow">Your data</p><strong>Start clean or keep a private backup.</strong><span>Sample data is only a first-run tour. Clearing it preserves your profile and household setup.</span></div><div><button className="secondary-button" onClick={onExport}><Download size={16} /> Download backup</button><button className="secondary-button danger-button" onClick={onReset}><Trash2 size={16} /> Clear sample data</button></div></section>
       </>}
 
       {section === "activity" && <ActivityView transactions={transactions} accounts={allAccounts} search={search} setSearch={setSearch} onAdd={onAdd} onImport={onImport} onDelete={onDelete} onEdit={onEditTransaction} selectedMonthLabel={selectedMonthLabel} selectedMonth={selectedMonth} setSelectedMonth={setSelectedMonth} shiftMonth={shiftMonth} mode={mode} setMode={setMode} filter={filter} setFilter={setFilter} period={period} setPeriod={setPeriod} />}
       {section === "accounts" && <AccountsView accounts={accounts} netWorth={netWorth} onAdd={onAddAccount} onEdit={onEditAccount} />}
       {section === "plan" && <section className="panel plan-editor-panel"><PanelHeading eyebrow="A plan, not a punishment" title="Monthly spending boundaries" /><SpendingPlanList plans={plans} transactions={monthTransactions} onSave={onSavePlan} scope={scope} /></section>}
-      {section === "inbox" && <section className="panel inbox-panel full-inbox"><div className="inbox-intro"><span className="import-icon"><Inbox size={22} /></span><div><strong>Review before it reaches the ledger</strong><p>Imported statements, receipts, screenshots and future bank connections arrive here. Lifetime checks duplicates, categorisation and possible transfers first.</p></div></div><InboxList items={reviewItems} accounts={allAccounts} onApprove={onApproveInbox} onDismiss={onDismissInbox} />{!reviewItems.length && <EmptyState icon={<Check />} title="Inbox zero" copy="Everything has been reviewed. Your numbers are up to date." />}</section>}
     </div>
   );
 }
@@ -996,8 +924,40 @@ function MoneyView({ section, setSection, accounts, allAccounts, transactions, m
 function SpendingPlanList({ plans, transactions, compact = false, onSave, scope }: { plans: FinanceData["spendingPlans"]; transactions: Transaction[]; compact?: boolean; onSave: (category: string, amount: number, scope: SpaceId) => void; scope: ViewScope }) {
   const spending = new Map<string, number>();
   transactions.filter((item) => item.type === "expense").forEach((item) => spending.set(item.category, (spending.get(item.category) || 0) + item.amount));
-  const visible = plans.length ? plans : expenseCategories.slice(0, compact ? 4 : 7).map((category, index) => ({ id: category, category, monthlyLimit: [800, 650, 400, 1700, 300, 450, 500][index], space: scope === "household" ? "household" as const : "personal" as const }));
-  return <div className="plan-list">{visible.slice(0, compact ? 5 : undefined).map((plan) => <SpendingPlanRow key={plan.id} plan={plan} spent={spending.get(plan.category) || 0} onSave={onSave} />)}</div>;
+  return (
+    <div className="plan-list">
+      {plans.length
+        ? plans.slice(0, compact ? 5 : undefined).map((plan) => <SpendingPlanRow key={plan.id} plan={plan} spent={spending.get(plan.category) || 0} onSave={onSave} />)
+        : <EmptyState icon={<PiggyBank />} title="No spending plan yet" copy={compact ? "Set a monthly limit in the spending plan tab and it will be tracked here." : "Choose a category and set a monthly limit to track your spending against it."} />}
+      {!compact && <AddSpendingPlan plans={plans} scope={scope} onSave={onSave} />}
+    </div>
+  );
+}
+
+function AddSpendingPlan({ plans, scope, onSave }: { plans: FinanceData["spendingPlans"]; scope: ViewScope; onSave: (category: string, amount: number, scope: SpaceId) => void }) {
+  const planSpace: SpaceId = scope === "household" ? "household" : "personal";
+  const available = expenseCategories.filter((category) => !plans.some((plan) => plan.category === category && plan.space === planSpace));
+  const [category, setCategory] = useState(available[0] || "");
+  const [amount, setAmount] = useState("");
+  if (!available.length) return null;
+  const chosen = available.includes(category) ? category : available[0];
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    const limit = Number(amount);
+    if (!chosen || !Number.isFinite(limit) || limit <= 0) return;
+    onSave(chosen, limit, planSpace);
+    setAmount("");
+    setCategory(available.filter((item) => item !== chosen)[0] || "");
+  }
+
+  return (
+    <form className="plan-add-row" onSubmit={submit}>
+      <label className="field"><span>Category</span><select value={chosen} onChange={(event) => setCategory(event.target.value)}>{available.map((item) => <option key={item}>{item}</option>)}</select></label>
+      <label className="field"><span>Monthly limit</span><input required type="number" min="1" step="1" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="500" /></label>
+      <button className="secondary-button" type="submit"><Plus size={16} /> Add plan</button>
+    </form>
+  );
 }
 
 function SpendingPlanRow({ plan, spent, onSave }: { plan: FinanceData["spendingPlans"][number]; spent: number; onSave: (category: string, amount: number, scope: SpaceId) => void }) {
@@ -1007,17 +967,12 @@ function SpendingPlanRow({ plan, spent, onSave }: { plan: FinanceData["spendingP
   return <div className="plan-row"><div className="plan-row-top"><span><i style={{ background: categoryColors[plan.category] || categoryColors.Other }} />{plan.category}<small>{formatMoney(spent)} spent</small></span>{editing ? <span className="inline-plan-edit"><input autoFocus type="number" min="0" value={amount} onChange={(event) => setAmount(event.target.value)} aria-label={`${plan.category} monthly plan`} /><button onClick={() => { onSave(plan.category, Number(amount) || 0, plan.space); setEditing(false); }}><Check size={15} /></button></span> : <button onClick={() => setEditing(true)}>{formatMoney(plan.monthlyLimit)} <Edit3 size={14} /></button>}</div><div className="plan-progress"><i className={ratio > 1 ? "over-plan" : ""} style={{ width: `${Math.min(100, ratio * 100)}%`, background: categoryColors[plan.category] || categoryColors.Other }} /></div><small>{ratio > 1 ? `${formatMoney(spent - plan.monthlyLimit)} over` : `${formatMoney(Math.max(0, plan.monthlyLimit - spent))} left`}</small></div>;
 }
 
-function InboxList({ items, accounts, onApprove, onDismiss }: { items: InboxItem[]; accounts: Account[]; onApprove: (item: InboxItem) => void; onDismiss: (id: string) => void }) {
-  if (!items.length) return null;
-  return <div className="inbox-list">{items.map((item) => <div className="inbox-row" key={item.id}><span className="inbox-source">{item.source === "receipt" ? <ReceiptText size={19} /> : item.source === "bank" ? <Landmark size={19} /> : item.source === "sheet" ? <FileSpreadsheet size={19} /> : <CreditCard size={19} />}</span><span className="inbox-copy"><strong>{item.description}</strong><small>{item.reason} · {Math.round(item.confidence * 100)}% confidence</small><span>{item.suggestedType} · {item.suggestedCategory} · {accounts.find((account) => account.id === item.suggestedAccountId)?.name || "Choose account"}</span></span><strong className={item.suggestedType === "income" ? "amount-income" : ""}>{formatMoney(item.amount)}</strong><span className="inbox-actions"><button className="secondary-button" onClick={() => onDismiss(item.id)}>Dismiss</button><button className="primary-button" onClick={() => onApprove(item)}>Review</button></span></div>)}</div>;
-}
-
 function FutureView({ goals, recurring, events, accounts, forecast, recurringCost, onAddGoal, onAddEvent, onAddRecurring, onToggleRecurring, goalContribution, setGoalContribution, contributionAmount, setContributionAmount, fundGoal, onToggleEvent }: {
   goals: Goal[]; recurring: RecurringItem[]; events: PlannedEvent[]; accounts: Account[]; forecast: FinanceForecast; recurringCost: number; onAddGoal: () => void; onAddEvent: () => void; onAddRecurring: () => void; onToggleRecurring: (id: string) => void; goalContribution: string | null; setGoalContribution: (id: string | null) => void; contributionAmount: string; setContributionAmount: (value: string) => void; fundGoal: (id: string) => void; onToggleEvent: (id: string) => void;
 }) {
   const plannedTotal = events.filter((item) => item.includeInPlan).reduce((sum, item) => sum + item.amount, 0);
   return <div className="page-stack"><PageHeading eyebrow="From today to someday" title="Future" copy="Goals, life plans and scenarios share one model, so every choice reveals its trade-off."><button className="secondary-button" onClick={onAddEvent}><CalendarDays size={17} /> Plan an event</button><button className="primary-button" onClick={onAddGoal}><Target size={17} /> New goal</button></PageHeading>
-    <section className="future-hero"><div><p className="eyebrow hero-eyebrow">Forecast runway</p><h2>{formatMoney(forecast.monthlySurplus)} monthly surplus</h2><p>Based on {forecast.historyMonths} month{forecast.historyMonths === 1 ? "" : "s"} of activity · {forecast.confidence} confidence</p></div><div className="future-stat"><span>Safe to spend</span><strong>{formatMoney(forecast.safeToSpend)}</strong><small>after goal contributions</small></div><div className="future-stat"><span>Emergency cover</span><strong>{forecast.emergencyMonths.toFixed(1)} months</strong><small>{formatMoney(forecast.liquidBalance)} liquid</small></div></section>
+    <section className="future-hero"><div><p className="eyebrow hero-eyebrow">Forecast runway</p><h2>{formatMoney(Math.abs(forecast.monthlySurplus))} monthly {forecast.monthlySurplus < 0 ? "deficit" : "surplus"}</h2><p>Based on {forecast.historyMonths} month{forecast.historyMonths === 1 ? "" : "s"} of activity · {forecast.confidence} confidence</p></div><div className="future-stat"><span>Safe to spend</span><strong>{formatMoney(forecast.safeToSpend)}</strong><small>after goal contributions</small></div><div className="future-stat"><span>Emergency cover</span><strong>{forecast.emergencyMonths.toFixed(1)} months</strong><small>{formatMoney(forecast.liquidBalance)} liquid</small></div></section>
     <section className="goal-runway-grid">{goals.map((goal) => { const model = forecast.goalForecasts.find((item) => item.goalId === goal.id); return <div className="runway-card" key={goal.id}><div className="runway-top"><span className={`goal-symbol goal-${goal.icon}`}><Target size={18} /></span><span className={model?.onTrack ? "status-on-track" : "status-watch"}>{model?.onTrack ? "On track" : "Needs attention"}</span></div><h3>{goal.name}</h3><strong>{model?.estimatedDate ? new Date(`${model.estimatedDate}T12:00:00`).toLocaleDateString("en-SG", { month: "long", year: "numeric" }) : "No forecast yet"}</strong><p>{model?.plannedEventDelayMonths ? `Planned events add about ${model.plannedEventDelayMonths} months.` : "No planned event delay modelled."}</p><div className="goal-progress"><i style={{ width: `${Math.min(100, (goal.current / goal.target) * 100)}%` }} /></div><small>{formatMoney(goal.current)} of {formatMoney(goal.target)}</small></div>; })}{!goals.length && <EmptyState icon={<Target />} title="Give the future a number" copy="Create a goal and Lifetime will estimate when you can reach it." />}</section>
     <div className="dashboard-grid"><section className="panel scenario-panel"><PanelHeading eyebrow="Scenario lab" title="What your plans change" action="Add event" onAction={onAddEvent} /><div className="scenario-summary"><span>Included life plans</span><strong>{formatMoney(plannedTotal)}</strong><small>Turn an event off to compare the forecast without it.</small></div><div className="event-list">{events.map((event) => <button className={event.includeInPlan ? "event-row" : "event-row event-muted"} key={event.id} onClick={() => onToggleEvent(event.id)}><span className="event-date"><strong>{new Date(`${event.date}T12:00:00`).toLocaleDateString("en-SG", { month: "short" })}</strong><small>{new Date(`${event.date}T12:00:00`).getFullYear()}</small></span><span><strong>{event.name}</strong><small>{event.kind} · {event.includeInPlan ? "included" : "not modelled"}</small></span><strong>{formatMoney(event.amount)}</strong><span className={event.includeInPlan ? "tiny-toggle tiny-toggle-on" : "tiny-toggle"}><i /></span></button>)}</div></section><section className="panel forecast-explain"><span className="coach-glance-icon"><WandSparkles size={21} /></span><p className="eyebrow">Scenario signal</p><h3>{plannedTotal ? `${formatMoney(plannedTotal)} of plans are competing with your goals.` : "No planned events are competing with your goals."}</h3><p>{forecast.goalForecasts.some((item) => item.plannedEventDelayMonths > 0) ? `The largest modelled delay is ${Math.max(...forecast.goalForecasts.map((item) => item.plannedEventDelayMonths))} months. Lifetime recalculates this when spending or contributions change.` : "Your forecast currently has no event-driven delays."}</p><small>Forecasts are estimates, not guarantees. Evidence: transaction averages, current balances, goal contributions and included events.</small></section></div>
     <PlansView goals={goals} recurring={recurring} accounts={accounts} recurringCost={recurringCost} onAddGoal={onAddGoal} onAddRecurring={onAddRecurring} onToggleRecurring={onToggleRecurring} goalContribution={goalContribution} setGoalContribution={setGoalContribution} contributionAmount={contributionAmount} setContributionAmount={setContributionAmount} fundGoal={fundGoal} />
@@ -1039,7 +994,7 @@ function CoachView({ data, scope, forecast, categoryTotals, qwenConfigured, onCa
     const lower = question.toLowerCase();
     if (lower.includes("emergency") || lower.includes("safe")) return `You have about ${forecast.emergencyMonths.toFixed(1)} months of liquid cover. After current goal contributions, the model leaves ${formatMoney(forecast.safeToSpend)} flexible each month. I’d protect the emergency buffer before raising discretionary plans.`;
     if (lower.includes("goal") || lower.includes("afford") || lower.includes("trip")) { const delayed = Math.max(0, ...forecast.goalForecasts.map((item) => item.plannedEventDelayMonths)); return delayed ? `Your included life plans could push the most affected goal back by about ${delayed} months. That estimate uses the plan costs divided by the goal’s current monthly contribution; change either input and it recalculates.` : "Your current goal model does not show an event-driven delay. Add a future event with a cost to compare the trade-off."; }
-    return `The strongest signal is a modelled monthly surplus of ${formatMoney(forecast.monthlySurplus)} with ${forecast.confidence} confidence. Your largest current spending category is ${categoryTotals[0]?.[0] || "not established yet"}. Add more history or ask about a specific goal for a sharper answer.`;
+    return `The strongest signal is a modelled monthly ${forecast.monthlySurplus < 0 ? "deficit" : "surplus"} of ${formatMoney(Math.abs(forecast.monthlySurplus))} with ${forecast.confidence} confidence. Your largest current spending category is ${categoryTotals[0]?.[0] || "not established yet"}. Add more history or ask about a specific goal for a sharper answer.`;
   }
   async function ask(questionOverride?: string) {
     const question = (questionOverride || prompt).trim();
@@ -1061,10 +1016,10 @@ function CoachView({ data, scope, forecast, categoryTotals, qwenConfigured, onCa
   </div>;
 }
 
-function HouseholdView({ data, accounts, members, onSetup, onEditAccount }: { data: FinanceData; accounts: Account[]; members: Array<{ email: string; display_name: string; role: string; status: string }>; onSetup: () => void; onEditAccount: (account: Account) => void }) {
+function HouseholdView({ data, accounts, members, viewerEmail, onSetup, onEditAccount }: { data: FinanceData; accounts: Account[]; members: Array<{ email: string; display_name: string; role: string; status: string }>; viewerEmail: string; onSetup: () => void; onEditAccount: (account: Account) => void }) {
   const sharedAccounts = data.accounts.filter((item) => item.space === "household");
   const personalAccounts = data.accounts.filter((item) => item.space === "personal");
-  const visibleMembers = members.length ? members : [{ email: "Signed-in account", display_name: data.profile.name, role: "owner", status: "active" }, ...(data.profile.partnerEmail ? [{ email: data.profile.partnerEmail, display_name: data.profile.partnerName, role: "member", status: "pending" }] : [])];
+  const visibleMembers = members.length ? members : [{ email: viewerEmail, display_name: data.profile.name, role: "owner", status: "active" }, ...(data.profile.partnerEmail ? [{ email: data.profile.partnerEmail, display_name: data.profile.partnerName, role: "member", status: "pending" }] : [])];
   return <div className="page-stack"><PageHeading eyebrow="Private by default, shared on purpose" title={data.profile.householdName || "Household"} copy="Personal and shared finances feed one combined view without erasing ownership or duplicating transfers."><button className="primary-button" onClick={onSetup}><Settings2 size={17} /> Manage household</button></PageHeading>
     <section className="household-hero"><div className="household-orbits"><span className="avatar">{data.profile.name.slice(0, 1)}</span><span className="avatar partner-avatar">{data.profile.partnerName?.slice(0, 1) || "P"}</span></div><div><p className="eyebrow hero-eyebrow">Together, with boundaries</p><h2>{formatMoney(sharedAccounts.reduce((sum, item) => sum + item.balance, 0))} shared net worth</h2><p>{sharedAccounts.length} shared accounts · {personalAccounts.length} personal accounts stay private in each member’s Personal view.</p></div></section>
     <div className="dashboard-grid"><section className="panel members-panel"><PanelHeading eyebrow="People and access" title="Household members" action="Manage" onAction={onSetup} /><div className="member-list">{visibleMembers.map((member) => <div key={member.email}><span className="avatar">{(member.display_name || member.email).slice(0, 1).toUpperCase()}</span><span><strong>{member.display_name || member.email}</strong><small>{member.email}</small></span><span className={member.status === "active" ? "member-status active-member" : "member-status"}>{member.status === "active" ? "Active" : "Invite pending"}</span><small>{member.role}</small></div>)}</div><div className="info-note"><ShieldCheck size={17} /><span>Invited members claim the shared space when they sign in with the same email. Personal records remain in their own space.</span></div></section><section className="panel access-panel"><PanelHeading eyebrow="Ownership map" title="What appears where" /><div className="access-map"><div><span>Personal</span><strong>{personalAccounts.length} accounts</strong><small>Visible to their owner</small></div><ChevronRight size={18} /><div><span>Household</span><strong>{sharedAccounts.length} accounts</strong><small>Visible to active members</small></div><ChevronRight size={18} /><div><span>Together</span><strong>{accounts.length} accounts</strong><small>Combined without duplication</small></div></div></section></div>
@@ -1191,7 +1146,7 @@ function AccountsView({ accounts, netWorth, onAdd, onEdit }: { accounts: Account
         <button className="primary-button" onClick={onAdd}><Plus size={18} /> Add account</button>
       </PageHeading>
       <section className="accounts-hero">
-        <div><p className="eyebrow">Total net worth</p><strong>{formatMoney(netWorth)}</strong><span><TrendingUp size={15} /> Healthy upward trend</span></div>
+        <div><p className="eyebrow">Total net worth</p><strong>{formatMoney(netWorth)}</strong><span><WalletCards size={15} /> Across {accounts.length} account{accounts.length === 1 ? "" : "s"}</span></div>
         <div className="balance-breakdown">
           <div><span>Cash & savings</span><strong>{formatMoney(liquid)}</strong></div>
           <div><span>Investments</span><strong>{formatMoney(investments)}</strong></div>
@@ -1258,71 +1213,6 @@ function PlansView({ goals, recurring, accounts, recurringCost, onAddGoal, onAdd
             </div>
           );
         })}
-      </section>
-    </div>
-  );
-}
-
-function InsightsView({ monthSeries, maxSeriesValue, categoryTotals, monthSpending, savingsRate, recurringCost, onExport, onImport, onReset }: {
-  monthSeries: { key: string; label: string; income: number; spending: number }[];
-  maxSeriesValue: number;
-  categoryTotals: [string, number][];
-  monthSpending: number;
-  savingsRate: number;
-  recurringCost: number;
-  onExport: () => void;
-  onImport: () => void;
-  onReset: () => void;
-}) {
-  return (
-    <div className="page-stack">
-      <PageHeading eyebrow="Patterns, not noise" title="Insights" copy="A clearer view of the habits shaping your future.">
-        <button className="secondary-button" onClick={onImport}><FileSpreadsheet size={17} /> Import sheet</button>
-        <button className="primary-button" onClick={onExport}><Download size={17} /> Private backup</button>
-      </PageHeading>
-
-      <section className="insight-grid">
-        <div className="panel cashflow-chart-card">
-          <PanelHeading eyebrow="Six-month view" title="Income and spending" />
-          <div className="chart-legend"><span><i className="income-key" />Income</span><span><i className="spend-key" />Spending</span></div>
-          <div className="bar-chart">
-            {monthSeries.map((month) => (
-              <div className="bar-group" key={month.key}>
-                <div className="bars"><i className="income-bar" style={{ height: `${Math.max(3, (month.income / maxSeriesValue) * 100)}%` }} title={`Income ${formatMoney(month.income)}`} /><i className="spend-bar" style={{ height: `${Math.max(3, (month.spending / maxSeriesValue) * 100)}%` }} title={`Spending ${formatMoney(month.spending)}`} /></div>
-                <span>{month.label}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="panel insight-score-card">
-          <p className="eyebrow">Foundation score</p>
-          <div className="score-ring" style={{ "--score": `${Math.min(100, Math.round(64 + savingsRate / 3)) * 3.6}deg` } as React.CSSProperties}>
-            <span><strong>{Math.min(100, Math.round(64 + savingsRate / 3))}</strong><small>Strong</small></span>
-          </div>
-          <p>Your cash buffer and savings rhythm are doing the heavy lifting.</p>
-          <div className="score-points"><span><Check size={15} /> Positive monthly cash flow</span><span><Check size={15} /> Goals actively funded</span><span><Check size={15} /> Transfers classified correctly</span></div>
-        </div>
-
-        <div className="panel category-insight-card">
-          <PanelHeading eyebrow="Current month" title="Spending pattern" />
-          <div className="category-list large-category-list">
-            {categoryTotals.map(([category, amount]) => (
-              <div key={category}>
-                <span><i style={{ background: categoryColors[category] || categoryColors.Other }} />{category}</span>
-                <span className="category-value"><small>{monthSpending ? ((amount / monthSpending) * 100).toFixed(0) : 0}%</small><strong>{formatMoney(amount)}</strong></span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="panel commitments-card">
-          <p className="eyebrow">Commitments</p>
-          <h3>{formatMoney(recurringCost)}<small> / month</small></h3>
-          <p>Your recurring payments are visible before they land.</p>
-          <div className="commitment-line"><span>Subscriptions & bills</span><strong>{formatMoney(recurringCost)}</strong></div>
-          <button className="text-button danger-text" onClick={onReset}>Clear sample data and start fresh</button>
-        </div>
       </section>
     </div>
   );
@@ -1782,44 +1672,42 @@ function RecurringModal({ scope, accounts, onClose, onSubmit }: { scope: ViewSco
 
 function ImportModal({ data, scope, onClose, setData, notify }: { data: FinanceData; scope: ViewScope; onClose: () => void; setData: React.Dispatch<React.SetStateAction<FinanceData>>; notify: (message: string) => void }) {
   const [text, setText] = useState("date,description,amount,type,category,account\n2026-08-14,Coffee,6.50,expense,Food & dining,Everyday");
-  const [error, setError] = useState("");
+  const [report, setReport] = useState<ImportReport | null>(null);
 
   function importRows() {
-    const lines = text.trim().split(/\r?\n/).filter(Boolean);
-    if (lines.length < 2) { setError("Add a header and at least one transaction row."); return; }
-    const headers = lines[0].split(",").map((value) => value.trim().toLowerCase());
-    const required = ["date", "description", "amount"];
-    if (required.some((header) => !headers.includes(header))) { setError("The sheet needs date, description, and amount columns."); return; }
-    const imported: Transaction[] = [];
-    for (const line of lines.slice(1)) {
-      const cells = line.split(",").map((value) => value.trim());
-      const row = Object.fromEntries(headers.map((header, index) => [header, cells[index] || ""]));
-      const amount = Math.abs(Number(row.amount));
-      const account = data.accounts.find((item) => item.name.toLowerCase() === row.account?.toLowerCase()) || data.accounts[0];
-      const explicitType = row.type?.toLowerCase();
-      const type: TransactionType = explicitType === "income" || explicitType === "transfer" || explicitType === "expense"
-        ? explicitType
-        : Number(row.amount) < 0 ? "expense" : "income";
-      if (!row.date || !row.description || !Number.isFinite(amount) || amount <= 0 || !account || type === "transfer") continue;
-      imported.push({ id: uid("sheet"), type, amount, date: row.date, description: row.description, category: row.category || (type === "income" ? "Income" : "Other"), accountId: account.id, space: account.space || (scope === "household" ? "household" : "personal"), source: "sheet" });
-    }
-    if (!imported.length) { setError("No valid rows were found. Transfers should be added in the app so both accounts stay linked."); return; }
+    const result = importTransactions(text, { accounts: data.accounts, existing: data.transactions, scope });
+    setReport(result);
+    if (result.error || !result.accepted.length) return;
     setData((current) => ({
       ...current,
-      accounts: imported.reduce((accounts, transaction) => applyTransaction(accounts, transaction), current.accounts),
-      transactions: [...imported, ...current.transactions],
+      accounts: result.accepted.reduce((accounts, transaction) => applyTransaction(accounts, transaction), current.accounts),
+      transactions: [...result.accepted, ...current.transactions],
     }));
-    onClose();
-    notify(`${imported.length} transaction${imported.length === 1 ? "" : "s"} imported from your sheet.`);
+    notify(describeImport(result));
+    if (!result.duplicates && !result.rejected.length) onClose();
   }
 
   return (
     <ModalShell eyebrow="Sheets and statements" title="Import transactions" onClose={onClose}>
-      <div className="import-copy"><span className="import-icon"><FileSpreadsheet size={22} /></span><div><strong>Paste rows from Google Sheets or a CSV</strong><p>Use the columns date, description, amount, type, category, and account. Negative amounts become expenses when type is blank.</p></div></div>
-      <textarea className="import-textarea" value={text} onChange={(event) => { setText(event.target.value); setError(""); }} aria-label="Transaction CSV data" />
-      <div className="info-note"><ShieldCheck size={17} /><span>Imported rows are saved to your signed-in workspace. Transfers are intentionally skipped here so they can be linked safely between two accounts in the ledger.</span></div>
-      {error && <p className="form-error">{error}</p>}
-      <div className="form-actions"><button className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" onClick={importRows}>Import rows</button></div>
+      <div className="import-copy"><span className="import-icon"><FileSpreadsheet size={22} /></span><div><strong>Paste rows from Google Sheets or a CSV</strong><p>Use the columns date, description, amount, type, category, and account. Negative amounts become expenses when type is blank. Rows matching a transaction you already have are skipped.</p></div></div>
+      <textarea className="import-textarea" value={text} onChange={(event) => { setText(event.target.value); setReport(null); }} aria-label="Transaction CSV data" />
+      <div className="info-note"><ShieldCheck size={17} /><span>Transfers are intentionally skipped here so they can be linked safely between two accounts in the ledger.</span></div>
+      {report?.error && <p className="form-error">{report.error}</p>}
+      {report && !report.error && (
+        <div className="import-report">
+          <div className="import-report-counts">
+            <span><strong>{report.accepted.length}</strong> imported</span>
+            <span><strong>{report.duplicates}</strong> skipped as duplicate{report.duplicates === 1 ? "" : "s"}</span>
+            <span><strong>{report.rejected.length}</strong> rejected</span>
+          </div>
+          {report.rejected.length > 0 && (
+            <ul className="import-rejects">
+              {report.rejected.map((item) => <li key={item.line}>Line {item.line}: {item.reason}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
+      <div className="form-actions"><button className="secondary-button" onClick={onClose}>{report && !report.error ? "Done" : "Cancel"}</button><button className="primary-button" onClick={importRows}>Import rows</button></div>
     </ModalShell>
   );
 }

@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "build:sites": "vinext build",
-    "start": "next start"
+    "start": "next start",
+    "test": "vitest run"
   },
   "dependencies": {
     "lucide-react": "^0.575.0",
@@ -28,6 +29,7 @@
     "typescript": "^5",
     "vinext": "^0.0.50",
     "vite": "^8.0.13",
+    "vitest": "^4.1.10",
     "wrangler": "^4.92.0"
   },
   "type": "module"

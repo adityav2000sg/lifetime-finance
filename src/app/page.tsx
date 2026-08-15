@@ -1,14 +1,12 @@
 import LifetimeFinanceHub from '@/components/LifetimeFinanceHub';
-import { chatGPTSignOutPath, requireChatGPTUser } from '@/app/chatgpt-auth';
+import { LOCAL_USER } from '@/app/local-identity';
 
 export const dynamic = "force-dynamic";
 
-export default async function Home() {
-  const user = await requireChatGPTUser("/");
+export default function Home() {
   return (
     <LifetimeFinanceHub
-      viewer={{ userId: user.userId, displayName: user.displayName, email: user.email }}
-      signOutPath={chatGPTSignOutPath("/")}
+      viewer={{ userId: LOCAL_USER.userId, displayName: LOCAL_USER.displayName, email: LOCAL_USER.email }}
     />
   );
 }

@@ -1,5 +1,3 @@
-import { getChatGPTUser } from "@/app/chatgpt-auth";
-
 type CoachPayload = {
   mode?: "coach" | "capture";
   prompt?: string;
@@ -14,15 +12,11 @@ function qwenConfig() {
 }
 
 export async function GET() {
-  const user = await getChatGPTUser();
-  if (!user) return Response.json({ error: "Sign in required" }, { status: 401 });
   const { apiKey, model } = qwenConfig();
   return Response.json({ configured: Boolean(apiKey), model });
 }
 
 export async function POST(request: Request) {
-  const user = await getChatGPTUser();
-  if (!user) return Response.json({ error: "Sign in required" }, { status: 401 });
   const { apiKey, baseUrl, model } = qwenConfig();
   if (!apiKey) return Response.json({ error: "Qwen is not configured" }, { status: 503 });
   try {
