@@ -105,6 +105,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .profile-chip strong { color: white; font-size: 12px; }
 .profile-chip small { margin-top: 2px; color: rgba(229,242,234,.45); font-size: 10px; }
 .profile-chip svg { color: rgba(229,242,234,.45); }
+.signout-button { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 9px; text-decoration: none; }
+.signout-button:hover { background: rgba(255,255,255,.07); }
+.signout-button:hover svg { color: white; }
 
 .app-main { min-height: 100vh; margin-left: 252px; }
 .topbar { height: 72px; position: sticky; top: 0; z-index: 20; display: flex; align-items: center; justify-content: space-between; padding: 0 34px; background: rgba(240, 243, 236, 0.78); backdrop-filter: blur(22px); border-bottom: 1px solid rgba(29, 64, 54, 0.08); }

@@ -20,6 +20,7 @@ import {
   Layers3,
   LayoutDashboard,
   Leaf,
+  LogOut,
   Menu,
   MoreHorizontal,
   PiggyBank,
@@ -81,6 +82,27 @@ function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
+type Viewer = {
+  userId: string;
+  displayName: string;
+  email: string;
+};
+
+function createViewerSeed(viewer: Viewer) {
+  const seed = createSeedData();
+  const emailName = viewer.email.split("@")[0];
+  const displayName = viewer.displayName === viewer.email ? emailName : viewer.displayName;
+  const firstName = displayName.split(/\s+/)[0] || "You";
+  return {
+    ...seed,
+    profile: {
+      name: displayName,
+      partnerName: "Partner",
+      householdName: `${firstName}’s household`,
+    },
+  };
+}
+
 function applyTransaction(accounts: Account[], transaction: Transaction, direction: 1 | -1 = 1) {
   return accounts.map((account) => {
     if (transaction.type === "expense" && account.id === transaction.accountId) {
@@ -101,8 +123,8 @@ function applyTransaction(accounts: Account[], transaction: Transaction, directi
   });
 }
 
-export default function LifetimeFinanceHub() {
-  const [data, setData] = useState<FinanceData>(() => createSeedData());
+export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Viewer; signOutPath: string }) {
+  const [data, setData] = useState<FinanceData>(() => createViewerSeed(viewer));
   const [scope, setScope] = useState<ViewScope>("all");
   const [activeView, setActiveView] = useState<ViewId>("overview");
   const [modal, setModal] = useState<ModalId>(null);
@@ -113,9 +135,10 @@ export default function LifetimeFinanceHub() {
   const [goalContribution, setGoalContribution] = useState<string | null>(null);
   const [contributionAmount, setContributionAmount] = useState("");
   const loaded = useRef(false);
+  const storageKey = `lifetimeFinanceDataV2:${viewer.userId}`;
 
   useEffect(() => {
-    const saved = window.localStorage.getItem("lifetimeFinanceDataV2");
+    const saved = window.localStorage.getItem(storageKey);
     if (saved) {
       try {
         const parsed = JSON.parse(saved) as FinanceData;
@@ -125,13 +148,13 @@ export default function LifetimeFinanceHub() {
       }
     }
     loaded.current = true;
-  }, []);
+  }, [storageKey]);
 
   useEffect(() => {
     if (loaded.current) {
-      window.localStorage.setItem("lifetimeFinanceDataV2", JSON.stringify(data));
+      window.localStorage.setItem(storageKey, JSON.stringify(data));
     }
-  }, [data]);
+  }, [data, storageKey]);
 
   useEffect(() => {
     if (!toast) return;
@@ -283,7 +306,7 @@ export default function LifetimeFinanceHub() {
   }
 
   function resetSample() {
-    setData(createSeedData());
+    setData(createViewerSeed(viewer));
     setScope("all");
     setActiveView("overview");
     notify("Sample workspace restored.");
@@ -328,9 +351,9 @@ export default function LifetimeFinanceHub() {
         </div>
 
         <div className="profile-chip">
-          <span className="avatar">PP</span>
-          <div><strong>{data.profile.name}</strong><small>{data.profile.householdName}</small></div>
-          <MoreHorizontal size={18} />
+          <span className="avatar">{data.profile.name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</span>
+          <div><strong>{data.profile.name}</strong><small>{viewer.email}</small></div>
+          <a className="signout-button" href={signOutPath} aria-label="Sign out of ChatGPT" title="Sign out"><LogOut size={17} /></a>
         </div>
       </aside>
 
