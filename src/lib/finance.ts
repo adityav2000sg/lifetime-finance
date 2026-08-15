@@ -59,6 +59,8 @@ export interface FinanceData {
     name: string;
     partnerName: string;
     householdName: string;
+    partnerEmail?: string;
+    householdStartedAt?: string;
   };
   accounts: Account[];
   transactions: Transaction[];
