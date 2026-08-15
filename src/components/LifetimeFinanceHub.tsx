@@ -654,6 +654,8 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
               onApproveInbox={approveInboxItem}
               onDismissInbox={dismissInboxItem}
               onSavePlan={saveSpendingPlan}
+              onExport={exportData}
+              onReset={resetSample}
               scope={scope}
             />
           )}
@@ -898,7 +900,7 @@ function Overview({
   );
 }
 
-function MoneyView({ section, setSection, accounts, allAccounts, transactions, monthTransactions, plans, inbox, netWorth, monthIncome, monthSpending, search, setSearch, onAdd, onImport, onDelete, onEditTransaction, onAddAccount, onEditAccount, selectedMonthLabel, selectedMonth, setSelectedMonth, shiftMonth, mode, setMode, filter, setFilter, period, setPeriod, onApproveInbox, onDismissInbox, onSavePlan, scope }: {
+function MoneyView({ section, setSection, accounts, allAccounts, transactions, monthTransactions, plans, inbox, netWorth, monthIncome, monthSpending, search, setSearch, onAdd, onImport, onDelete, onEditTransaction, onAddAccount, onEditAccount, selectedMonthLabel, selectedMonth, setSelectedMonth, shiftMonth, mode, setMode, filter, setFilter, period, setPeriod, onApproveInbox, onDismissInbox, onSavePlan, onExport, onReset, scope }: {
   section: MoneySection;
   setSection: (section: MoneySection) => void;
   accounts: Account[];
@@ -931,6 +933,8 @@ function MoneyView({ section, setSection, accounts, allAccounts, transactions, m
   onApproveInbox: (item: InboxItem) => void;
   onDismissInbox: (id: string) => void;
   onSavePlan: (category: string, amount: number, scope: SpaceId) => void;
+  onExport: () => void;
+  onReset: () => void;
   scope: ViewScope;
 }) {
   const tabs: Array<{ id: MoneySection; label: string; icon: React.ElementType; count?: number }> = [
@@ -978,6 +982,7 @@ function MoneyView({ section, setSection, accounts, allAccounts, transactions, m
           <PanelHeading eyebrow="Financial inbox" title="New information, before it changes your story" action="Review all" onAction={() => setSection("inbox")} />
           <InboxList items={reviewItems.slice(0, 3)} accounts={allAccounts} onApprove={onApproveInbox} onDismiss={onDismissInbox} />
         </section>
+        <section className="data-controls"><div><p className="eyebrow">Your data</p><strong>Start clean or keep a private backup.</strong><span>Sample data is only a first-run tour. Clearing it preserves your profile and household setup.</span></div><div><button className="secondary-button" onClick={onExport}><Download size={16} /> Download backup</button><button className="secondary-button danger-button" onClick={onReset}><Trash2 size={16} /> Clear sample data</button></div></section>
       </>}
 
       {section === "activity" && <ActivityView transactions={transactions} accounts={allAccounts} search={search} setSearch={setSearch} onAdd={onAdd} onImport={onImport} onDelete={onDelete} onEdit={onEditTransaction} selectedMonthLabel={selectedMonthLabel} selectedMonth={selectedMonth} setSelectedMonth={setSelectedMonth} shiftMonth={shiftMonth} mode={mode} setMode={setMode} filter={filter} setFilter={setFilter} period={period} setPeriod={setPeriod} />}
