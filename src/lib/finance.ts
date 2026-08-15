@@ -1,8 +1,8 @@
 export type SpaceId = "personal" | "household";
 export type ViewScope = SpaceId | "all";
-export type AccountType = "checking" | "savings" | "credit" | "investment" | "cash";
+export type AccountType = "checking" | "savings" | "credit" | "investment" | "cash" | "property" | "cpf" | "loan" | "insurance" | "other";
 export type TransactionType = "expense" | "income" | "transfer";
-export type TransactionSource = "manual" | "sheet" | "bank" | "recurring";
+export type TransactionSource = "manual" | "voice" | "sheet" | "bank" | "receipt" | "recurring";
 
 export interface Account {
   id: string;
@@ -39,6 +39,8 @@ export interface Goal {
   targetDate: string;
   space: SpaceId;
   icon: string;
+  monthlyContribution?: number;
+  priority?: "essential" | "important" | "flexible";
 }
 
 export interface RecurringItem {
@@ -53,19 +55,57 @@ export interface RecurringItem {
   active: boolean;
 }
 
+export interface SpendingPlan {
+  id: string;
+  category: string;
+  monthlyLimit: number;
+  space: SpaceId;
+}
+
+export interface PlannedEvent {
+  id: string;
+  name: string;
+  amount: number;
+  date: string;
+  kind: "travel" | "home" | "family" | "education" | "car" | "other";
+  space: SpaceId;
+  includeInPlan: boolean;
+  note?: string;
+}
+
+export interface InboxItem {
+  id: string;
+  description: string;
+  amount: number;
+  date: string;
+  source: "bank" | "receipt" | "sheet" | "screenshot";
+  suggestedType: TransactionType;
+  suggestedCategory: string;
+  suggestedAccountId?: string;
+  space: SpaceId;
+  confidence: number;
+  status: "review" | "approved" | "dismissed";
+  reason: string;
+}
+
 export interface FinanceData {
-  version: 2;
+  version: 3;
   profile: {
     name: string;
     partnerName: string;
     householdName: string;
     partnerEmail?: string;
     householdStartedAt?: string;
+    voiceLocale?: string;
+    voiceLexicon?: string[];
   };
   accounts: Account[];
   transactions: Transaction[];
   goals: Goal[];
   recurring: RecurringItem[];
+  spendingPlans: SpendingPlan[];
+  plannedEvents: PlannedEvent[];
+  inbox: InboxItem[];
 }
 
 export const expenseCategories = [
@@ -98,6 +138,11 @@ export const accountTypeLabels: Record<AccountType, string> = {
   credit: "Credit card",
   investment: "Investment",
   cash: "Cash",
+  property: "Property",
+  cpf: "CPF / pension",
+  loan: "Loan / mortgage",
+  insurance: "Insurance value",
+  other: "Other asset",
 };
 
 function isoDaysAgo(days: number) {
@@ -118,11 +163,13 @@ function isoMonthsAgo(months: number, day: number) {
 
 export function createSeedData(): FinanceData {
   return {
-    version: 2,
+    version: 3,
     profile: {
       name: "Peter",
       partnerName: "MJ",
       householdName: "Parker household",
+      voiceLocale: "en-SG",
+      voiceLexicon: ["Yochi", "kopitiam", "hawker centre", "PayNow", "DBS", "CPF"],
     },
     accounts: [
       {
@@ -197,6 +244,39 @@ export function createSeedData(): FinanceData {
         last4: "5204",
         accent: "gold",
       },
+      {
+        id: "cpf-oa",
+        name: "CPF overview",
+        institution: "CPF",
+        type: "cpf",
+        space: "personal",
+        owner: "Peter",
+        balance: 68400,
+        currency: "SGD",
+        accent: "mint",
+      },
+      {
+        id: "home-value",
+        name: "Home estimate",
+        institution: "Manual valuation",
+        type: "property",
+        space: "household",
+        owner: "Peter + MJ",
+        balance: 760000,
+        currency: "SGD",
+        accent: "sky",
+      },
+      {
+        id: "home-loan",
+        name: "Home mortgage",
+        institution: "DBS",
+        type: "loan",
+        space: "household",
+        owner: "Peter + MJ",
+        balance: -548000,
+        currency: "SGD",
+        accent: "coral",
+      },
     ],
     transactions: [
       { id: "t-01", type: "income", amount: 7600, date: isoDaysAgo(14), description: "Salary", category: "Income", accountId: "dbs-everyday", space: "personal", source: "bank" },
@@ -224,15 +304,123 @@ export function createSeedData(): FinanceData {
       { id: "old-11", type: "expense", amount: 3320, date: isoMonthsAgo(5, 16), description: "Monthly living", category: "Home", accountId: "dbs-everyday", space: "personal", source: "bank" },
     ],
     goals: [
-      { id: "goal-home", name: "Our first home", target: 120000, current: 74200, targetDate: "2028-06-01", space: "household", icon: "home" },
-      { id: "goal-buffer", name: "Peace-of-mind fund", target: 30000, current: 21600, targetDate: "2027-01-01", space: "household", icon: "shield" },
-      { id: "goal-sabbatical", name: "Creative sabbatical", target: 18000, current: 7450, targetDate: "2027-09-01", space: "personal", icon: "spark" },
+      { id: "goal-home", name: "Our next home", target: 120000, current: 74200, targetDate: "2028-06-01", space: "household", icon: "home", monthlyContribution: 1800, priority: "important" },
+      { id: "goal-buffer", name: "Peace-of-mind fund", target: 30000, current: 21600, targetDate: "2027-01-01", space: "household", icon: "shield", monthlyContribution: 900, priority: "essential" },
+      { id: "goal-sabbatical", name: "Creative sabbatical", target: 18000, current: 7450, targetDate: "2027-09-01", space: "personal", icon: "spark", monthlyContribution: 650, priority: "flexible" },
     ],
     recurring: [
       { id: "r-01", name: "Netflix", amount: 19.98, cadence: "monthly", nextDate: isoDaysAgo(-12), accountId: "dbs-joint", category: "Entertainment", space: "household", active: true },
       { id: "r-02", name: "Gym membership", amount: 118, cadence: "monthly", nextDate: isoDaysAgo(-5), accountId: "revolut-card", category: "Health", space: "personal", active: true },
       { id: "r-03", name: "Home insurance", amount: 680, cadence: "yearly", nextDate: isoDaysAgo(-28), accountId: "dbs-joint", category: "Home", space: "household", active: true },
     ],
+    spendingPlans: [
+      { id: "plan-food", category: "Food & dining", monthlyLimit: 900, space: "household" },
+      { id: "plan-groceries", category: "Groceries", monthlyLimit: 700, space: "household" },
+      { id: "plan-transport", category: "Transport", monthlyLimit: 450, space: "personal" },
+      { id: "plan-home", category: "Home", monthlyLimit: 1900, space: "household" },
+      { id: "plan-fun", category: "Entertainment", monthlyLimit: 320, space: "personal" },
+    ],
+    plannedEvents: [
+      { id: "event-japan", name: "Japan in spring", amount: 12000, date: isoMonthsAgo(-8, 12), kind: "travel", space: "household", includeInPlan: true, note: "Flights, hotels, food and shopping" },
+      { id: "event-reno", name: "Kitchen refresh", amount: 18000, date: isoMonthsAgo(-15, 8), kind: "home", space: "household", includeInPlan: true },
+    ],
+    inbox: [
+      { id: "inbox-1", description: "Yochi", amount: 13.8, date: isoDaysAgo(0), source: "screenshot", suggestedType: "expense", suggestedCategory: "Food & dining", suggestedAccountId: "revolut-card", space: "personal", confidence: 0.91, status: "review", reason: "Recognised from a payment notification" },
+      { id: "inbox-2", description: "DBS → HSBC", amount: 5000, date: isoDaysAgo(1), source: "bank", suggestedType: "transfer", suggestedCategory: "Transfer", suggestedAccountId: "dbs-everyday", space: "personal", confidence: 0.98, status: "review", reason: "Possible transfer between two accounts you own" },
+      { id: "inbox-3", description: "Cold Storage", amount: 84.25, date: isoDaysAgo(2), source: "receipt", suggestedType: "expense", suggestedCategory: "Groceries", suggestedAccountId: "dbs-joint", space: "household", confidence: 0.87, status: "review", reason: "Receipt matched to a known merchant" },
+    ],
+  };
+}
+
+export function normalizeFinanceData(input: Partial<FinanceData>, fallback: FinanceData): FinanceData {
+  return {
+    ...fallback,
+    ...input,
+    version: 3,
+    profile: { ...fallback.profile, ...(input.profile || {}) },
+    accounts: input.accounts || fallback.accounts,
+    transactions: input.transactions || fallback.transactions,
+    goals: input.goals || fallback.goals,
+    recurring: input.recurring || fallback.recurring,
+    spendingPlans: input.spendingPlans || [],
+    plannedEvents: input.plannedEvents || [],
+    inbox: input.inbox || [],
+  };
+}
+
+export function monthlyEquivalent(item: RecurringItem) {
+  return item.cadence === "monthly" ? item.amount : item.cadence === "quarterly" ? item.amount / 3 : item.amount / 12;
+}
+
+export interface FinanceForecast {
+  averageIncome: number;
+  averageSpending: number;
+  monthlySurplus: number;
+  recurringCost: number;
+  liquidBalance: number;
+  emergencyMonths: number;
+  safeToSpend: number;
+  historyMonths: number;
+  confidence: "low" | "medium" | "high";
+  goalForecasts: Array<{
+    goalId: string;
+    monthlyContribution: number;
+    monthsRemaining: number;
+    estimatedDate: string | null;
+    onTrack: boolean;
+    plannedEventDelayMonths: number;
+  }>;
+}
+
+export function buildForecast(data: FinanceData, scope: ViewScope): FinanceForecast {
+  const accounts = inScope(data.accounts, scope);
+  const transactions = inScope(data.transactions, scope).filter((item) => item.type !== "transfer");
+  const monthTotals = new Map<string, { income: number; spending: number }>();
+  transactions.forEach((item) => {
+    const key = monthKey(item.date);
+    const value = monthTotals.get(key) || { income: 0, spending: 0 };
+    if (item.type === "income") value.income += item.amount;
+    if (item.type === "expense") value.spending += item.amount;
+    monthTotals.set(key, value);
+  });
+  const completeishMonths = [...monthTotals.values()].filter((item) => item.income > 0 || item.spending > 0).slice(-6);
+  const divisor = Math.max(1, completeishMonths.length);
+  const averageIncome = completeishMonths.reduce((sum, item) => sum + item.income, 0) / divisor;
+  const averageSpending = completeishMonths.reduce((sum, item) => sum + item.spending, 0) / divisor;
+  const recurringCost = inScope(data.recurring, scope).filter((item) => item.active).reduce((sum, item) => sum + monthlyEquivalent(item), 0);
+  const monthlySurplus = Math.max(0, averageIncome - averageSpending);
+  const liquidBalance = accounts.filter((item) => ["checking", "savings", "cash"].includes(item.type)).reduce((sum, item) => sum + Math.max(0, item.balance), 0);
+  const emergencyMonths = averageSpending > 0 ? liquidBalance / averageSpending : 0;
+  const monthlyGoalCommitments = inScope(data.goals, scope).reduce((sum, goal) => sum + (goal.monthlyContribution || 0), 0);
+  const safeToSpend = Math.max(0, monthlySurplus - monthlyGoalCommitments);
+  const includedEvents = inScope(data.plannedEvents, scope).filter((item) => item.includeInPlan && new Date(`${item.date}T12:00:00`) >= new Date());
+  const goalForecasts = inScope(data.goals, scope).map((goal) => {
+    const remaining = Math.max(0, goal.target - goal.current);
+    const contribution = Math.max(0, goal.monthlyContribution || Math.min(monthlySurplus / Math.max(1, inScope(data.goals, scope).length), remaining));
+    const monthsRemaining = remaining === 0 ? 0 : contribution > 0 ? Math.ceil(remaining / contribution) : Number.POSITIVE_INFINITY;
+    const plannedCost = includedEvents.filter((event) => event.space === goal.space).reduce((sum, event) => sum + event.amount, 0);
+    const plannedEventDelayMonths = contribution > 0 ? Math.ceil(plannedCost / contribution) : 0;
+    const estimated = Number.isFinite(monthsRemaining) ? new Date(new Date().getFullYear(), new Date().getMonth() + monthsRemaining + plannedEventDelayMonths, 1) : null;
+    return {
+      goalId: goal.id,
+      monthlyContribution: contribution,
+      monthsRemaining,
+      estimatedDate: estimated ? estimated.toISOString().slice(0, 10) : null,
+      onTrack: estimated ? estimated <= new Date(`${goal.targetDate}T12:00:00`) : false,
+      plannedEventDelayMonths,
+    };
+  });
+  return {
+    averageIncome,
+    averageSpending,
+    monthlySurplus,
+    recurringCost,
+    liquidBalance,
+    emergencyMonths,
+    safeToSpend,
+    historyMonths: completeishMonths.length,
+    confidence: completeishMonths.length >= 5 ? "high" : completeishMonths.length >= 3 ? "medium" : "low",
+    goalForecasts,
   };
 }
 

@@ -7,6 +7,8 @@ import {
   ArrowUpRight,
   Bell,
   CalendarDays,
+  Cloud,
+  CloudOff,
   ChartNoAxesCombined,
   Check,
   ChevronDown,
@@ -17,7 +19,9 @@ import {
   Download,
   Edit3,
   FileSpreadsheet,
+  Gauge,
   Home,
+  Inbox,
   Landmark,
   Layers3,
   LayoutDashboard,
@@ -25,9 +29,12 @@ import {
   List,
   LogOut,
   Menu,
+  MessageCircle,
+  Mic,
   PiggyBank,
   Plus,
   Repeat2,
+  ReceiptText,
   Search,
   Settings2,
   ShieldCheck,
@@ -40,19 +47,24 @@ import {
   UserRound,
   Users,
   WalletCards,
+  WandSparkles,
   X,
 } from "lucide-react";
 import {
   Account,
   AccountType,
   FinanceData,
+  FinanceForecast,
   Goal,
+  InboxItem,
+  PlannedEvent,
   RecurringItem,
   SpaceId,
   Transaction,
   TransactionType,
   ViewScope,
   accountTypeLabels,
+  buildForecast,
   categoryColors,
   createSeedData,
   expenseCategories,
@@ -60,21 +72,24 @@ import {
   formatMoney,
   inScope,
   monthKey,
+  monthlyEquivalent,
+  normalizeFinanceData,
   uid,
 } from "@/lib/finance";
 
-type ViewId = "overview" | "activity" | "accounts" | "plans" | "insights";
-type ModalId = "transaction" | "account" | "goal" | "recurring" | "import" | "household" | null;
+type ViewId = "today" | "money" | "future" | "coach" | "household";
+type MoneySection = "snapshot" | "activity" | "accounts" | "plan" | "inbox";
+type ModalId = "capture" | "transaction" | "account" | "goal" | "event" | "recurring" | "import" | "household" | null;
 type ActivityMode = "feed" | "ledger";
 type ActivityFilter = "all" | TransactionType;
 type ActivityPeriod = "month" | "all";
 
 const navItems: { id: ViewId; label: string; icon: React.ElementType }[] = [
-  { id: "overview", label: "Overview", icon: LayoutDashboard },
-  { id: "activity", label: "Activity", icon: ArrowLeftRight },
-  { id: "accounts", label: "Accounts", icon: WalletCards },
-  { id: "plans", label: "Plans", icon: Target },
-  { id: "insights", label: "Insights", icon: ChartNoAxesCombined },
+  { id: "today", label: "Today", icon: LayoutDashboard },
+  { id: "money", label: "Money", icon: WalletCards },
+  { id: "future", label: "Future", icon: Target },
+  { id: "coach", label: "Coach", icon: WandSparkles },
+  { id: "household", label: "Household", icon: Users },
 ];
 
 const scopeOptions: { id: ViewScope; label: string; shortLabel: string; icon: React.ElementType }[] = [
@@ -134,7 +149,8 @@ function applyTransaction(accounts: Account[], transaction: Transaction, directi
 export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Viewer; signOutPath: string }) {
   const [data, setData] = useState<FinanceData>(() => createViewerSeed(viewer));
   const [scope, setScope] = useState<ViewScope>("all");
-  const [activeView, setActiveView] = useState<ViewId>("overview");
+  const [activeView, setActiveView] = useState<ViewId>("today");
+  const [moneySection, setMoneySection] = useState<MoneySection>("snapshot");
   const [modal, setModal] = useState<ModalId>(null);
   const [search, setSearch] = useState("");
   const [activityMode, setActivityMode] = useState<ActivityMode>("feed");
@@ -146,31 +162,63 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
   const [goalContribution, setGoalContribution] = useState<string | null>(null);
   const [contributionAmount, setContributionAmount] = useState("");
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [captureDraft, setCaptureDraft] = useState<Partial<Transaction> | null>(null);
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<"loading" | "saving" | "saved" | "offline">("loading");
+  const [householdMembers, setHouseholdMembers] = useState<Array<{ email: string; display_name: string; role: string; status: string }>>([]);
+  const [qwenConfigured, setQwenConfigured] = useState(false);
   const loaded = useRef(false);
-  const storageKey = `lifetimeFinanceDataV2:${viewer.userId}`;
+  const storageKey = `lifetimeFinanceDataV3:${viewer.userId}`;
 
   useEffect(() => {
-    const saved = window.localStorage.getItem(storageKey);
-    if (saved) {
+    let cancelled = false;
+    const defaults = createViewerSeed(viewer);
+    async function hydrate() {
       try {
-        const parsed = JSON.parse(saved) as FinanceData;
-        if (parsed.version === 2) {
-          const defaults = createViewerSeed(viewer);
-          setData({ ...parsed, profile: { ...defaults.profile, ...parsed.profile } });
-        }
+        const response = await fetch("/api/finance", { cache: "no-store" });
+        if (!response.ok) throw new Error("cloud unavailable");
+        const payload = await response.json() as { data?: Partial<FinanceData> | null; members?: typeof householdMembers };
+        if (cancelled) return;
+        setData(payload.data ? normalizeFinanceData(payload.data, defaults) : defaults);
+        setHouseholdMembers(payload.members || []);
+        setSyncStatus("saved");
       } catch {
-        setToast("We could not read the saved copy, so the sample workspace is open.");
+        const saved = window.localStorage.getItem(storageKey) || window.localStorage.getItem(`lifetimeFinanceDataV2:${viewer.userId}`);
+        if (saved) {
+          try { setData(normalizeFinanceData(JSON.parse(saved) as Partial<FinanceData>, defaults)); }
+          catch { setData(defaults); }
+        } else setData(defaults);
+        setSyncStatus("offline");
+      } finally {
+        if (!cancelled) {
+          loaded.current = true;
+          setHydrated(true);
+        }
       }
     }
-    loaded.current = true;
-  }, [storageKey]);
+    hydrate();
+    return () => { cancelled = true; };
+  }, [storageKey, viewer]);
 
   useEffect(() => {
-    if (loaded.current) {
-      window.localStorage.setItem(storageKey, JSON.stringify(data));
-    }
-  }, [data, storageKey]);
+    if (!loaded.current || !hydrated) return;
+    window.localStorage.setItem(storageKey, JSON.stringify(data));
+    setSyncStatus((current) => current === "offline" ? "offline" : "saving");
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch("/api/finance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+        if (!response.ok) throw new Error("save failed");
+        setSyncStatus("saved");
+      } catch { setSyncStatus("offline"); }
+    }, 650);
+    return () => window.clearTimeout(timer);
+  }, [data, hydrated, storageKey]);
+
+  useEffect(() => {
+    fetch("/api/coach", { cache: "no-store" }).then((response) => response.ok ? response.json() : null)
+      .then((payload: { configured?: boolean } | null) => setQwenConfigured(Boolean(payload?.configured))).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     if (!toast) return;
@@ -192,6 +240,10 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
   }, [data.accounts, data.transactions, scope]);
   const scopedGoals = useMemo(() => inScope(data.goals, scope), [data.goals, scope]);
   const scopedRecurring = useMemo(() => inScope(data.recurring, scope), [data.recurring, scope]);
+  const scopedPlans = useMemo(() => inScope(data.spendingPlans, scope), [data.spendingPlans, scope]);
+  const scopedEvents = useMemo(() => inScope(data.plannedEvents, scope), [data.plannedEvents, scope]);
+  const scopedInbox = useMemo(() => inScope(data.inbox, scope), [data.inbox, scope]);
+  const forecast = useMemo(() => buildForecast(data, scope), [data, scope]);
   const monthTransactions = useMemo(
     () => scopedTransactions.filter((transaction) => monthKey(transaction.date) === selectedMonth),
     [scopedTransactions, selectedMonth],
@@ -208,7 +260,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
   const savingsRate = monthIncome > 0 ? Math.max(0, (monthCashFlow / monthIncome) * 100) : 0;
   const activeRecurringCost = scopedRecurring
     .filter((item) => item.active)
-    .reduce((sum, item) => sum + (item.cadence === "monthly" ? item.amount : item.cadence === "quarterly" ? item.amount / 3 : item.amount / 12), 0);
+    .reduce((sum, item) => sum + monthlyEquivalent(item), 0);
 
   const categoryTotals = useMemo(() => {
     const totals = new Map<string, number>();
@@ -264,11 +316,24 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
       return;
     }
     setEditingTransaction(null);
+    setCaptureDraft(type ? { type } : null);
     if (type) setActivityFilter(type);
     setModal("transaction");
   }
 
+  function openCaptureDraft(draft: Partial<Transaction>) {
+    if (!data.accounts.length) {
+      setModal("account");
+      notify("Add an account before recording transactions.");
+      return;
+    }
+    setEditingTransaction(null);
+    setCaptureDraft(draft);
+    setModal("transaction");
+  }
+
   function openEditTransaction(transaction: Transaction) {
+    setCaptureDraft(null);
     setEditingTransaction(transaction);
     setModal("transaction");
   }
@@ -343,7 +408,8 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
     setActivityFilter(filter);
     setActivityMode(mode);
     setActivityPeriod(mode === "ledger" ? "all" : "month");
-    setActiveView("activity");
+    setMoneySection("activity");
+    setActiveView("money");
   }
 
   function openImport() {
@@ -366,6 +432,41 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
     setData((current) => ({ ...current, recurring: [...current.recurring, item] }));
     setModal(null);
     notify("Recurring payment added.");
+  }
+
+  function addPlannedEvent(item: PlannedEvent) {
+    setData((current) => ({ ...current, plannedEvents: [...current.plannedEvents, item] }));
+    setModal(null);
+    setActiveView("future");
+    notify("Future plan added to your forecast.");
+  }
+
+  function approveInboxItem(item: InboxItem) {
+    if (item.suggestedType === "transfer") {
+      const destination = data.accounts.find((account) => account.id !== item.suggestedAccountId && account.institution !== data.accounts.find((source) => source.id === item.suggestedAccountId)?.institution);
+      openCaptureDraft({ type: "transfer", amount: item.amount, description: item.description, date: item.date, accountId: item.suggestedAccountId, transferAccountId: destination?.id, source: item.source === "receipt" ? "receipt" : "bank" });
+      return;
+    }
+    openCaptureDraft({ type: item.suggestedType, amount: item.amount, description: item.description, date: item.date, category: item.suggestedCategory, accountId: item.suggestedAccountId, space: item.space, source: item.source === "receipt" ? "receipt" : "bank" });
+    setData((current) => ({ ...current, inbox: current.inbox.map((entry) => entry.id === item.id ? { ...entry, status: "approved" } : entry) }));
+  }
+
+  function dismissInboxItem(id: string) {
+    setData((current) => ({ ...current, inbox: current.inbox.map((item) => item.id === id ? { ...item, status: "dismissed" } : item) }));
+    notify("Inbox item dismissed.");
+  }
+
+  function saveSpendingPlan(category: string, monthlyLimit: number, planScope: SpaceId) {
+    setData((current) => {
+      const existing = current.spendingPlans.find((item) => item.category === category && item.space === planScope);
+      return {
+        ...current,
+        spendingPlans: existing
+          ? current.spendingPlans.map((item) => item.id === existing.id ? { ...item, monthlyLimit } : item)
+          : [...current.spendingPlans, { id: uid("plan"), category, monthlyLimit, space: planScope }],
+      };
+    });
+    notify("Spending plan updated.");
   }
 
   function fundGoal(goalId: string) {
@@ -400,9 +501,9 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
 
   function resetSample() {
     if (!window.confirm("Clear every sample account, transaction, goal, and recurring payment? Your household profile will stay in place.")) return;
-    setData((current) => ({ ...createViewerSeed(viewer), profile: current.profile, accounts: [], transactions: [], goals: [], recurring: [] }));
+    setData((current) => ({ ...createViewerSeed(viewer), profile: current.profile, accounts: [], transactions: [], goals: [], recurring: [], spendingPlans: [], plannedEvents: [], inbox: [] }));
     setScope("all");
-    setActiveView("overview");
+    setActiveView("today");
     notify("Sample data cleared. Add your first account when you’re ready.");
   }
 
@@ -476,14 +577,17 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
           </div>
 
           <div className="top-actions">
-            <button className="secondary-button compact-button household-button" onClick={() => setModal("household")}><Settings2 size={17} /> Household</button>
+            <span className={`sync-pill sync-${syncStatus}`} title={syncStatus === "saved" ? "Saved across your signed-in devices" : syncStatus === "offline" ? "Using the private on-device backup" : "Saving changes"}>
+              {syncStatus === "offline" ? <CloudOff size={15} /> : <Cloud size={15} />}
+              <span>{syncStatus === "saved" ? "Saved" : syncStatus === "saving" ? "Saving" : syncStatus === "offline" ? "On device" : "Loading"}</span>
+            </span>
             <button className="icon-button" onClick={() => notify("You’re all caught up.")} aria-label="Notifications"><Bell size={19} /><span className="notification-dot" /></button>
-            <button className="primary-button compact-button" onClick={() => openNewTransaction()}><Plus size={18} /> Add transaction</button>
+            <button className="primary-button compact-button capture-button" onClick={() => setModal("capture")}><Mic size={18} /> Capture</button>
           </div>
         </header>
 
         <main className="content">
-          {activeView === "overview" && (
+          {activeView === "today" && (
             <Overview
               scope={scope}
               scopeLabel={currentScope.label}
@@ -511,19 +615,32 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
               setContributionAmount={setContributionAmount}
               fundGoal={fundGoal}
               data={data}
+              forecast={forecast}
+              onCapture={() => setModal("capture")}
             />
           )}
 
-          {activeView === "activity" && (
-            <ActivityView
+          {activeView === "money" && (
+            <MoneyView
+              section={moneySection}
+              setSection={setMoneySection}
+              accounts={scopedAccounts}
+              allAccounts={data.accounts}
               transactions={visibleTransactions}
-              accounts={data.accounts}
+              monthTransactions={monthTransactions}
+              plans={scopedPlans}
+              inbox={scopedInbox}
+              netWorth={netWorth}
+              monthIncome={monthIncome}
+              monthSpending={monthSpending}
               search={search}
               setSearch={setSearch}
               onAdd={() => openNewTransaction()}
               onImport={openImport}
               onDelete={deleteTransaction}
-              onEdit={openEditTransaction}
+              onEditTransaction={openEditTransaction}
+              onAddAccount={openNewAccount}
+              onEditAccount={openEditAccount}
               selectedMonthLabel={selectedMonthLabel}
               selectedMonth={selectedMonth}
               setSelectedMonth={setSelectedMonth}
@@ -534,25 +651,23 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
               setFilter={setActivityFilter}
               period={activityPeriod}
               setPeriod={setActivityPeriod}
+              onApproveInbox={approveInboxItem}
+              onDismissInbox={dismissInboxItem}
+              onSavePlan={saveSpendingPlan}
+              scope={scope}
             />
           )}
 
-          {activeView === "accounts" && (
-            <AccountsView
-              accounts={scopedAccounts}
-              netWorth={netWorth}
-              onAdd={openNewAccount}
-              onEdit={openEditAccount}
-            />
-          )}
-
-          {activeView === "plans" && (
-            <PlansView
+          {activeView === "future" && (
+            <FutureView
               goals={scopedGoals}
               recurring={scopedRecurring}
+              events={scopedEvents}
               accounts={data.accounts}
+              forecast={forecast}
               recurringCost={activeRecurringCost}
               onAddGoal={() => setModal("goal")}
+              onAddEvent={() => setModal("event")}
               onAddRecurring={() => setModal("recurring")}
               onToggleRecurring={toggleRecurring}
               goalContribution={goalContribution}
@@ -560,21 +675,16 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
               contributionAmount={contributionAmount}
               setContributionAmount={setContributionAmount}
               fundGoal={fundGoal}
+              onToggleEvent={(id) => setData((current) => ({ ...current, plannedEvents: current.plannedEvents.map((item) => item.id === id ? { ...item, includeInPlan: !item.includeInPlan } : item) }))}
             />
           )}
 
-          {activeView === "insights" && (
-            <InsightsView
-              monthSeries={monthSeries}
-              maxSeriesValue={maxSeriesValue}
-              categoryTotals={categoryTotals}
-              monthSpending={monthSpending}
-              savingsRate={savingsRate}
-              recurringCost={activeRecurringCost}
-              onExport={exportData}
-              onImport={openImport}
-              onReset={resetSample}
-            />
+          {activeView === "coach" && (
+            <CoachView data={data} scope={scope} forecast={forecast} categoryTotals={categoryTotals} qwenConfigured={qwenConfigured} onCapture={() => setModal("capture")} />
+          )}
+
+          {activeView === "household" && (
+            <HouseholdView data={data} accounts={scopedAccounts} members={householdMembers} onSetup={() => setModal("household")} onEditAccount={openEditAccount} />
           )}
         </main>
       </div>
@@ -590,11 +700,13 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
         })}
       </nav>
 
-      <button className="mobile-fab" onClick={() => openNewTransaction()} aria-label="Add transaction"><Plus size={24} /></button>
+      <button className="mobile-fab voice-fab" onClick={() => setModal("capture")} aria-label="Capture with voice or text"><Mic size={24} /></button>
 
-      {modal === "transaction" && <TransactionModal initial={editingTransaction} accounts={data.accounts} scope={scope} onClose={() => { setModal(null); setEditingTransaction(null); }} onSubmit={saveTransaction} />}
+      {modal === "capture" && <CaptureModal accounts={data.accounts} profile={data.profile} scope={scope} qwenConfigured={qwenConfigured} onClose={() => setModal(null)} onTransaction={(draft) => openCaptureDraft(draft)} onPlan={(event) => addPlannedEvent(event)} onAsk={(prompt) => { setModal(null); setActiveView("coach"); window.setTimeout(() => window.dispatchEvent(new CustomEvent("lifetime-coach-question", { detail: prompt })), 100); }} onProfile={(profile) => setData((current) => ({ ...current, profile }))} />}
+      {modal === "transaction" && <TransactionModal initial={editingTransaction || captureDraft} accounts={data.accounts} scope={scope} onClose={() => { setModal(null); setEditingTransaction(null); setCaptureDraft(null); }} onSubmit={saveTransaction} />}
       {modal === "account" && <AccountModal initial={editingAccount} scope={scope} profileName={data.profile.name} partnerName={data.profile.partnerName} onClose={() => { setModal(null); setEditingAccount(null); }} onSubmit={saveAccount} />}
       {modal === "goal" && <GoalModal scope={scope} onClose={() => setModal(null)} onSubmit={addGoal} />}
+      {modal === "event" && <PlannedEventModal scope={scope} onClose={() => setModal(null)} onSubmit={addPlannedEvent} />}
       {modal === "recurring" && <RecurringModal scope={scope} accounts={data.accounts} onClose={() => setModal(null)} onSubmit={addRecurring} />}
       {modal === "import" && <ImportModal data={data} scope={scope} onClose={() => setModal(null)} setData={setData} notify={notify} />}
       {modal === "household" && <HouseholdModal profile={data.profile} viewerEmail={viewer.email} onClose={() => setModal(null)} onSubmit={saveHousehold} />}
@@ -631,6 +743,8 @@ function Overview({
   setContributionAmount,
   fundGoal,
   data,
+  forecast,
+  onCapture,
 }: {
   scope: ViewScope;
   scopeLabel: string;
@@ -658,6 +772,8 @@ function Overview({
   setContributionAmount: (value: string) => void;
   fundGoal: (id: string) => void;
   data: FinanceData;
+  forecast: FinanceForecast;
+  onCapture: () => void;
 }) {
   const today = new Date();
   const firstName = profileName.split(" ")[0];
@@ -683,9 +799,19 @@ function Overview({
           </div>
         </div>
         <div className="hero-actions">
-          <button className="hero-button" onClick={onAdd}><Plus size={18} /> Add transaction</button>
-          <button className="hero-secondary" onClick={() => onView("accounts")}>View accounts <ChevronRight size={17} /></button>
+          <button className="hero-button" onClick={onCapture}><Mic size={18} /> Tell Lifetime</button>
+          <button className="hero-secondary" onClick={() => onView("money")}>Explore your money <ChevronRight size={17} /></button>
         </div>
+      </section>
+
+      <section className="coach-glance">
+        <div className="coach-glance-icon"><WandSparkles size={21} /></div>
+        <div>
+          <p className="eyebrow">Lifetime outlook</p>
+          <h2>{forecast.safeToSpend > 0 ? `${formatMoney(forecast.safeToSpend)} is flexible each month.` : "Your current commitments use the monthly surplus."}</h2>
+          <p>You have {forecast.emergencyMonths.toFixed(1)} months of liquid cover. {forecast.goalForecasts.some((item) => !item.onTrack) ? "At least one goal needs a timing or contribution adjustment." : "Your modelled goals are currently on track."}</p>
+        </div>
+        <button className="secondary-button" onClick={() => onView("coach")}>Ask Coach <ChevronRight size={16} /></button>
       </section>
 
       <div className="month-row">
@@ -704,19 +830,19 @@ function Overview({
         <MetricCard label="Income" value={monthIncome} note="Open income activity" tone="green" icon={<ArrowDownLeft size={19} />} onClick={() => onMetric("income")} />
         <MetricCard label="Spending" value={monthSpending} note={`${transactions.filter((item) => item.type === "expense" && monthKey(item.date) === selectedMonth).length} transactions · open`} tone="coral" icon={<ArrowUpRight size={19} />} onClick={() => onMetric("expense")} />
         <MetricCard label="Cash flow" value={monthCashFlow} note="Open full ledger" tone="blue" icon={<ArrowLeftRight size={19} />} onClick={() => onMetric("all", "ledger")} />
-        <MetricCard label="Savings rate" value={savingsRate} suffix="%" note="Open insights" tone="gold" icon={<PiggyBank size={19} />} money={false} onClick={() => onView("insights")} />
+        <MetricCard label="Savings rate" value={savingsRate} suffix="%" note="Open Coach" tone="gold" icon={<PiggyBank size={19} />} money={false} onClick={() => onView("coach")} />
       </section>
 
       <div className="dashboard-grid">
         <section className="panel accounts-panel">
-          <PanelHeading eyebrow="Accounts" title="Where your money lives" action="See all" onAction={() => onView("accounts")} />
+          <PanelHeading eyebrow="Accounts" title="Where your money lives" action="See all" onAction={() => onView("money")} />
           <div className="account-list">
             {accounts.length ? accounts.slice(0, 4).map((account) => <AccountRow key={account.id} account={account} />) : <EmptyState icon={<WalletCards />} title="Add your first account" copy="Start with a bank, card, cash, or investment account." />}
           </div>
         </section>
 
         <section className="panel spending-panel">
-          <PanelHeading eyebrow="Spending" title="This month by category" action="Insights" onAction={() => onView("insights")} />
+          <PanelHeading eyebrow="Spending" title="This month by category" action="Open Money" onAction={() => onView("money")} />
           {categoryTotals.length ? (
             <>
               <div className="category-meter" aria-label="Spending category breakdown">
@@ -734,14 +860,14 @@ function Overview({
         </section>
 
         <section className="panel activity-panel">
-          <PanelHeading eyebrow="Activity" title="Recent transactions" action="See all" onAction={() => onView("activity")} />
+          <PanelHeading eyebrow="Activity" title="Recent transactions" action="See all" onAction={() => onView("money")} />
           <div className="transaction-list compact-list">
             {transactions.length ? transactions.slice(0, 6).map((transaction) => <TransactionRow key={transaction.id} transaction={transaction} accounts={data.accounts} />) : <EmptyState icon={<ArrowLeftRight />} title="No activity yet" copy="Transactions you add or import will appear here." />}
           </div>
         </section>
 
         <section className="panel goal-panel">
-          <PanelHeading eyebrow="Next milestone" title={goal ? goal.name : "Create your first goal"} action="All plans" onAction={() => onView("plans")} />
+          <PanelHeading eyebrow="Next milestone" title={goal ? goal.name : "Create your first goal"} action="Open Future" onAction={() => onView("future")} />
           {goal ? (
             <GoalCard
               goal={goal}
@@ -756,7 +882,7 @@ function Overview({
         </section>
 
         <section className="panel recurring-panel">
-          <PanelHeading eyebrow="On the horizon" title="Upcoming payments" action="Manage" onAction={() => onView("plans")} />
+          <PanelHeading eyebrow="On the horizon" title="Upcoming payments" action="Manage" onAction={() => onView("future")} />
           <div className="upcoming-list">
             {recurring.some((item) => item.active) ? recurring.filter((item) => item.active).slice(0, 3).map((item) => (
               <div key={item.id}>
@@ -770,6 +896,175 @@ function Overview({
       </div>
     </div>
   );
+}
+
+function MoneyView({ section, setSection, accounts, allAccounts, transactions, monthTransactions, plans, inbox, netWorth, monthIncome, monthSpending, search, setSearch, onAdd, onImport, onDelete, onEditTransaction, onAddAccount, onEditAccount, selectedMonthLabel, selectedMonth, setSelectedMonth, shiftMonth, mode, setMode, filter, setFilter, period, setPeriod, onApproveInbox, onDismissInbox, onSavePlan, scope }: {
+  section: MoneySection;
+  setSection: (section: MoneySection) => void;
+  accounts: Account[];
+  allAccounts: Account[];
+  transactions: Transaction[];
+  monthTransactions: Transaction[];
+  plans: FinanceData["spendingPlans"];
+  inbox: InboxItem[];
+  netWorth: number;
+  monthIncome: number;
+  monthSpending: number;
+  search: string;
+  setSearch: (value: string) => void;
+  onAdd: () => void;
+  onImport: () => void;
+  onDelete: (transaction: Transaction) => void;
+  onEditTransaction: (transaction: Transaction) => void;
+  onAddAccount: () => void;
+  onEditAccount: (account: Account) => void;
+  selectedMonthLabel: string;
+  selectedMonth: string;
+  setSelectedMonth: (value: string) => void;
+  shiftMonth: (offset: number) => void;
+  mode: ActivityMode;
+  setMode: (mode: ActivityMode) => void;
+  filter: ActivityFilter;
+  setFilter: (filter: ActivityFilter) => void;
+  period: ActivityPeriod;
+  setPeriod: (period: ActivityPeriod) => void;
+  onApproveInbox: (item: InboxItem) => void;
+  onDismissInbox: (id: string) => void;
+  onSavePlan: (category: string, amount: number, scope: SpaceId) => void;
+  scope: ViewScope;
+}) {
+  const tabs: Array<{ id: MoneySection; label: string; icon: React.ElementType; count?: number }> = [
+    { id: "snapshot", label: "Snapshot", icon: Gauge },
+    { id: "activity", label: "Activity", icon: ArrowLeftRight },
+    { id: "accounts", label: "Accounts", icon: WalletCards },
+    { id: "plan", label: "Spending plan", icon: PiggyBank },
+    { id: "inbox", label: "Inbox", icon: Inbox, count: inbox.filter((item) => item.status === "review").length },
+  ];
+  const assets = accounts.filter((account) => account.balance >= 0);
+  const liabilities = accounts.filter((account) => account.balance < 0);
+  const reviewItems = inbox.filter((item) => item.status === "review");
+
+  return (
+    <div className="page-stack">
+      <PageHeading eyebrow="The full picture" title="Money" copy="Balances, transactions, spending decisions and incoming data—one trusted ledger.">
+        <button className="secondary-button" onClick={onImport}><Upload size={17} /> Import</button>
+        <button className="primary-button" onClick={onAdd}><Plus size={17} /> Transaction</button>
+      </PageHeading>
+      <div className="section-tabs money-tabs" role="tablist" aria-label="Money sections">
+        {tabs.map(({ id, label, icon: Icon, count }) => <button key={id} className={section === id ? "section-tab section-tab-active" : "section-tab"} onClick={() => setSection(id)} role="tab" aria-selected={section === id}><Icon size={17} />{label}{Boolean(count) && <span>{count}</span>}</button>)}
+      </div>
+
+      {section === "snapshot" && <>
+        <section className="money-snapshot-grid">
+          <div className="money-total-card"><p className="eyebrow">Net worth</p><strong>{formatMoney(netWorth)}</strong><span>Assets {formatMoney(assets.reduce((sum, item) => sum + item.balance, 0))} · Liabilities {formatMoney(Math.abs(liabilities.reduce((sum, item) => sum + item.balance, 0)))}</span></div>
+          <div className="money-mini-card"><span><ArrowDownLeft size={17} /> Income</span><strong>{formatMoney(monthIncome)}</strong><small>{selectedMonthLabel}</small></div>
+          <div className="money-mini-card"><span><ArrowUpRight size={17} /> Spending</span><strong>{formatMoney(monthSpending)}</strong><small>Transfers excluded</small></div>
+          <button className="money-mini-card actionable-card" onClick={() => setSection("inbox")}><span><Inbox size={17} /> Needs review</span><strong>{reviewItems.length}</strong><small>Keep the ledger trustworthy</small></button>
+        </section>
+        <div className="dashboard-grid">
+          <section className="panel accounts-panel">
+            <PanelHeading eyebrow="Balance sheet" title="Assets and liabilities" action="Manage" onAction={() => setSection("accounts")} />
+            <div className="account-list">
+              {accounts.slice(0, 7).map((account) => <button className="account-edit-row" key={account.id} onClick={() => onEditAccount(account)}><AccountRow account={account} /></button>)}
+              {!accounts.length && <EmptyState icon={<WalletCards />} title="Build your balance sheet" copy="Add cash, cards, CPF, investments, property, insurance values and loans." />}
+            </div>
+          </section>
+          <section className="panel spending-panel">
+            <PanelHeading eyebrow="Plan vs actual" title="This month" action="Edit plan" onAction={() => setSection("plan")} />
+            <SpendingPlanList plans={plans} transactions={monthTransactions} compact onSave={onSavePlan} scope={scope} />
+          </section>
+        </div>
+        <section className="panel inbox-panel">
+          <PanelHeading eyebrow="Financial inbox" title="New information, before it changes your story" action="Review all" onAction={() => setSection("inbox")} />
+          <InboxList items={reviewItems.slice(0, 3)} accounts={allAccounts} onApprove={onApproveInbox} onDismiss={onDismissInbox} />
+        </section>
+      </>}
+
+      {section === "activity" && <ActivityView transactions={transactions} accounts={allAccounts} search={search} setSearch={setSearch} onAdd={onAdd} onImport={onImport} onDelete={onDelete} onEdit={onEditTransaction} selectedMonthLabel={selectedMonthLabel} selectedMonth={selectedMonth} setSelectedMonth={setSelectedMonth} shiftMonth={shiftMonth} mode={mode} setMode={setMode} filter={filter} setFilter={setFilter} period={period} setPeriod={setPeriod} />}
+      {section === "accounts" && <AccountsView accounts={accounts} netWorth={netWorth} onAdd={onAddAccount} onEdit={onEditAccount} />}
+      {section === "plan" && <section className="panel plan-editor-panel"><PanelHeading eyebrow="A plan, not a punishment" title="Monthly spending boundaries" /><SpendingPlanList plans={plans} transactions={monthTransactions} onSave={onSavePlan} scope={scope} /></section>}
+      {section === "inbox" && <section className="panel inbox-panel full-inbox"><div className="inbox-intro"><span className="import-icon"><Inbox size={22} /></span><div><strong>Review before it reaches the ledger</strong><p>Imported statements, receipts, screenshots and future bank connections arrive here. Lifetime checks duplicates, categorisation and possible transfers first.</p></div></div><InboxList items={reviewItems} accounts={allAccounts} onApprove={onApproveInbox} onDismiss={onDismissInbox} />{!reviewItems.length && <EmptyState icon={<Check />} title="Inbox zero" copy="Everything has been reviewed. Your numbers are up to date." />}</section>}
+    </div>
+  );
+}
+
+function SpendingPlanList({ plans, transactions, compact = false, onSave, scope }: { plans: FinanceData["spendingPlans"]; transactions: Transaction[]; compact?: boolean; onSave: (category: string, amount: number, scope: SpaceId) => void; scope: ViewScope }) {
+  const spending = new Map<string, number>();
+  transactions.filter((item) => item.type === "expense").forEach((item) => spending.set(item.category, (spending.get(item.category) || 0) + item.amount));
+  const visible = plans.length ? plans : expenseCategories.slice(0, compact ? 4 : 7).map((category, index) => ({ id: category, category, monthlyLimit: [800, 650, 400, 1700, 300, 450, 500][index], space: scope === "household" ? "household" as const : "personal" as const }));
+  return <div className="plan-list">{visible.slice(0, compact ? 5 : undefined).map((plan) => <SpendingPlanRow key={plan.id} plan={plan} spent={spending.get(plan.category) || 0} onSave={onSave} />)}</div>;
+}
+
+function SpendingPlanRow({ plan, spent, onSave }: { plan: FinanceData["spendingPlans"][number]; spent: number; onSave: (category: string, amount: number, scope: SpaceId) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [amount, setAmount] = useState(String(plan.monthlyLimit));
+  const ratio = plan.monthlyLimit > 0 ? spent / plan.monthlyLimit : 0;
+  return <div className="plan-row"><div className="plan-row-top"><span><i style={{ background: categoryColors[plan.category] || categoryColors.Other }} />{plan.category}<small>{formatMoney(spent)} spent</small></span>{editing ? <span className="inline-plan-edit"><input autoFocus type="number" min="0" value={amount} onChange={(event) => setAmount(event.target.value)} aria-label={`${plan.category} monthly plan`} /><button onClick={() => { onSave(plan.category, Number(amount) || 0, plan.space); setEditing(false); }}><Check size={15} /></button></span> : <button onClick={() => setEditing(true)}>{formatMoney(plan.monthlyLimit)} <Edit3 size={14} /></button>}</div><div className="plan-progress"><i className={ratio > 1 ? "over-plan" : ""} style={{ width: `${Math.min(100, ratio * 100)}%`, background: categoryColors[plan.category] || categoryColors.Other }} /></div><small>{ratio > 1 ? `${formatMoney(spent - plan.monthlyLimit)} over` : `${formatMoney(Math.max(0, plan.monthlyLimit - spent))} left`}</small></div>;
+}
+
+function InboxList({ items, accounts, onApprove, onDismiss }: { items: InboxItem[]; accounts: Account[]; onApprove: (item: InboxItem) => void; onDismiss: (id: string) => void }) {
+  if (!items.length) return null;
+  return <div className="inbox-list">{items.map((item) => <div className="inbox-row" key={item.id}><span className="inbox-source">{item.source === "receipt" ? <ReceiptText size={19} /> : item.source === "bank" ? <Landmark size={19} /> : item.source === "sheet" ? <FileSpreadsheet size={19} /> : <CreditCard size={19} />}</span><span className="inbox-copy"><strong>{item.description}</strong><small>{item.reason} · {Math.round(item.confidence * 100)}% confidence</small><span>{item.suggestedType} · {item.suggestedCategory} · {accounts.find((account) => account.id === item.suggestedAccountId)?.name || "Choose account"}</span></span><strong className={item.suggestedType === "income" ? "amount-income" : ""}>{formatMoney(item.amount)}</strong><span className="inbox-actions"><button className="secondary-button" onClick={() => onDismiss(item.id)}>Dismiss</button><button className="primary-button" onClick={() => onApprove(item)}>Review</button></span></div>)}</div>;
+}
+
+function FutureView({ goals, recurring, events, accounts, forecast, recurringCost, onAddGoal, onAddEvent, onAddRecurring, onToggleRecurring, goalContribution, setGoalContribution, contributionAmount, setContributionAmount, fundGoal, onToggleEvent }: {
+  goals: Goal[]; recurring: RecurringItem[]; events: PlannedEvent[]; accounts: Account[]; forecast: FinanceForecast; recurringCost: number; onAddGoal: () => void; onAddEvent: () => void; onAddRecurring: () => void; onToggleRecurring: (id: string) => void; goalContribution: string | null; setGoalContribution: (id: string | null) => void; contributionAmount: string; setContributionAmount: (value: string) => void; fundGoal: (id: string) => void; onToggleEvent: (id: string) => void;
+}) {
+  const plannedTotal = events.filter((item) => item.includeInPlan).reduce((sum, item) => sum + item.amount, 0);
+  return <div className="page-stack"><PageHeading eyebrow="From today to someday" title="Future" copy="Goals, life plans and scenarios share one model, so every choice reveals its trade-off."><button className="secondary-button" onClick={onAddEvent}><CalendarDays size={17} /> Plan an event</button><button className="primary-button" onClick={onAddGoal}><Target size={17} /> New goal</button></PageHeading>
+    <section className="future-hero"><div><p className="eyebrow hero-eyebrow">Forecast runway</p><h2>{formatMoney(forecast.monthlySurplus)} monthly surplus</h2><p>Based on {forecast.historyMonths} month{forecast.historyMonths === 1 ? "" : "s"} of activity · {forecast.confidence} confidence</p></div><div className="future-stat"><span>Safe to spend</span><strong>{formatMoney(forecast.safeToSpend)}</strong><small>after goal contributions</small></div><div className="future-stat"><span>Emergency cover</span><strong>{forecast.emergencyMonths.toFixed(1)} months</strong><small>{formatMoney(forecast.liquidBalance)} liquid</small></div></section>
+    <section className="goal-runway-grid">{goals.map((goal) => { const model = forecast.goalForecasts.find((item) => item.goalId === goal.id); return <div className="runway-card" key={goal.id}><div className="runway-top"><span className={`goal-symbol goal-${goal.icon}`}><Target size={18} /></span><span className={model?.onTrack ? "status-on-track" : "status-watch"}>{model?.onTrack ? "On track" : "Needs attention"}</span></div><h3>{goal.name}</h3><strong>{model?.estimatedDate ? new Date(`${model.estimatedDate}T12:00:00`).toLocaleDateString("en-SG", { month: "long", year: "numeric" }) : "No forecast yet"}</strong><p>{model?.plannedEventDelayMonths ? `Planned events add about ${model.plannedEventDelayMonths} months.` : "No planned event delay modelled."}</p><div className="goal-progress"><i style={{ width: `${Math.min(100, (goal.current / goal.target) * 100)}%` }} /></div><small>{formatMoney(goal.current)} of {formatMoney(goal.target)}</small></div>; })}{!goals.length && <EmptyState icon={<Target />} title="Give the future a number" copy="Create a goal and Lifetime will estimate when you can reach it." />}</section>
+    <div className="dashboard-grid"><section className="panel scenario-panel"><PanelHeading eyebrow="Scenario lab" title="What your plans change" action="Add event" onAction={onAddEvent} /><div className="scenario-summary"><span>Included life plans</span><strong>{formatMoney(plannedTotal)}</strong><small>Turn an event off to compare the forecast without it.</small></div><div className="event-list">{events.map((event) => <button className={event.includeInPlan ? "event-row" : "event-row event-muted"} key={event.id} onClick={() => onToggleEvent(event.id)}><span className="event-date"><strong>{new Date(`${event.date}T12:00:00`).toLocaleDateString("en-SG", { month: "short" })}</strong><small>{new Date(`${event.date}T12:00:00`).getFullYear()}</small></span><span><strong>{event.name}</strong><small>{event.kind} · {event.includeInPlan ? "included" : "not modelled"}</small></span><strong>{formatMoney(event.amount)}</strong><span className={event.includeInPlan ? "tiny-toggle tiny-toggle-on" : "tiny-toggle"}><i /></span></button>)}</div></section><section className="panel forecast-explain"><span className="coach-glance-icon"><WandSparkles size={21} /></span><p className="eyebrow">Scenario signal</p><h3>{plannedTotal ? `${formatMoney(plannedTotal)} of plans are competing with your goals.` : "No planned events are competing with your goals."}</h3><p>{forecast.goalForecasts.some((item) => item.plannedEventDelayMonths > 0) ? `The largest modelled delay is ${Math.max(...forecast.goalForecasts.map((item) => item.plannedEventDelayMonths))} months. Lifetime recalculates this when spending or contributions change.` : "Your forecast currently has no event-driven delays."}</p><small>Forecasts are estimates, not guarantees. Evidence: transaction averages, current balances, goal contributions and included events.</small></section></div>
+    <PlansView goals={goals} recurring={recurring} accounts={accounts} recurringCost={recurringCost} onAddGoal={onAddGoal} onAddRecurring={onAddRecurring} onToggleRecurring={onToggleRecurring} goalContribution={goalContribution} setGoalContribution={setGoalContribution} contributionAmount={contributionAmount} setContributionAmount={setContributionAmount} fundGoal={fundGoal} />
+  </div>;
+}
+
+function CoachView({ data, scope, forecast, categoryTotals, qwenConfigured, onCapture }: { data: FinanceData; scope: ViewScope; forecast: FinanceForecast; categoryTotals: [string, number][]; qwenConfigured: boolean; onCapture: () => void }) {
+  const [prompt, setPrompt] = useState("");
+  const [messages, setMessages] = useState<Array<{ role: "user" | "coach"; text: string }>>([]);
+  const [thinking, setThinking] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const listener = (event: Event) => { const value = (event as CustomEvent<string>).detail; if (value) { setPrompt(value); window.setTimeout(() => document.getElementById("coach-submit")?.click(), 20); } };
+    window.addEventListener("lifetime-coach-question", listener);
+    return () => window.removeEventListener("lifetime-coach-question", listener);
+  }, []);
+  useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }); }, [messages, thinking]);
+  function localCoach(question: string) {
+    const lower = question.toLowerCase();
+    if (lower.includes("emergency") || lower.includes("safe")) return `You have about ${forecast.emergencyMonths.toFixed(1)} months of liquid cover. After current goal contributions, the model leaves ${formatMoney(forecast.safeToSpend)} flexible each month. I’d protect the emergency buffer before raising discretionary plans.`;
+    if (lower.includes("goal") || lower.includes("afford") || lower.includes("trip")) { const delayed = Math.max(0, ...forecast.goalForecasts.map((item) => item.plannedEventDelayMonths)); return delayed ? `Your included life plans could push the most affected goal back by about ${delayed} months. That estimate uses the plan costs divided by the goal’s current monthly contribution; change either input and it recalculates.` : "Your current goal model does not show an event-driven delay. Add a future event with a cost to compare the trade-off."; }
+    return `The strongest signal is a modelled monthly surplus of ${formatMoney(forecast.monthlySurplus)} with ${forecast.confidence} confidence. Your largest current spending category is ${categoryTotals[0]?.[0] || "not established yet"}. Add more history or ask about a specific goal for a sharper answer.`;
+  }
+  async function ask(questionOverride?: string) {
+    const question = (questionOverride || prompt).trim();
+    if (!question || thinking) return;
+    setPrompt(""); setMessages((current) => [...current, { role: "user", text: question }]); setThinking(true);
+    let answer = localCoach(question);
+    if (qwenConfigured) {
+      try {
+        const response = await fetch("/api/coach", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "coach", prompt: question, context: { scope, forecast, goals: data.goals, plannedEvents: data.plannedEvents, categories: categoryTotals.slice(0, 6), accounts: data.accounts.map(({ name, type, balance, space }) => ({ name, type, balance, space })) }, lexicon: data.profile.voiceLexicon }) });
+        const payload = await response.json() as { answer?: string };
+        if (response.ok && payload.answer) answer = payload.answer;
+      } catch { /* deterministic answer remains available */ }
+    }
+    setMessages((current) => [...current, { role: "coach", text: answer }]); setThinking(false);
+  }
+  return <div className="page-stack"><PageHeading eyebrow="Evidence, explained" title="Coach" copy="A financial co-pilot that reasons from your numbers, shows assumptions and never moves money for you."><span className={qwenConfigured ? "ai-status ai-online" : "ai-status"}><i />{qwenConfigured ? "Qwen Flash connected" : "Planning engine active"}</span><button className="primary-button" onClick={onCapture}><Mic size={17} /> Ask by voice</button></PageHeading>
+    <section className="coach-brief"><div className="coach-avatar"><WandSparkles size={24} /></div><div><p className="eyebrow">Your brief today</p><h2>{forecast.goalForecasts.some((item) => !item.onTrack) ? "One plan deserves a closer look." : "Your foundation is holding."}</h2><p>{forecast.emergencyMonths >= 6 ? "Your liquid buffer is above six months of modelled spending." : `Your liquid buffer covers ${forecast.emergencyMonths.toFixed(1)} months of modelled spending.`} {forecast.safeToSpend > 0 ? `${formatMoney(forecast.safeToSpend)} remains flexible after goal contributions.` : "There is no unallocated surplus in the current model."}</p><span>Confidence: {forecast.confidence} · {forecast.historyMonths} months of ledger evidence</span></div></section>
+    <div className="coach-layout"><section className="panel coach-chat"><div className="coach-thread" ref={scrollRef}>{!messages.length && <div className="coach-starters"><p>Try asking</p>{["Can I afford my planned trip?", "How strong is my emergency fund?", "What is slowing down my goals?"].map((item) => <button key={item} onClick={() => ask(item)}>{item}<ChevronRight size={15} /></button>)}</div>}{messages.map((message, index) => <div key={`${message.role}-${index}`} className={`coach-message coach-message-${message.role}`}>{message.role === "coach" && <span><WandSparkles size={15} /></span>}<p>{message.text}</p></div>)}{thinking && <div className="coach-thinking"><i /><i /><i /></div>}</div><form className="coach-composer" onSubmit={(event) => { event.preventDefault(); ask(); }}><button type="button" onClick={onCapture} aria-label="Ask by voice"><Mic size={19} /></button><input value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Ask about a goal, trade-off, or pattern…" /><button id="coach-submit" className="primary-button" type="submit">Ask</button></form></section><aside className="coach-evidence"><div className="evidence-card"><span><Gauge size={18} /> Monthly model</span><strong>{formatMoney(forecast.averageIncome)} in</strong><p>{formatMoney(forecast.averageSpending)} average spending</p></div><div className="evidence-card"><span><ShieldCheck size={18} /> Resilience</span><strong>{forecast.emergencyMonths.toFixed(1)} months</strong><p>{formatMoney(forecast.liquidBalance)} liquid</p></div><div className="evidence-card"><span><Target size={18} /> Goals</span><strong>{forecast.goalForecasts.filter((item) => item.onTrack).length} on track</strong><p>{forecast.goalForecasts.length} modelled</p></div><p className="evidence-note">Coach explains the deterministic model. It does not calculate balances itself or recommend securities.</p></aside></div>
+  </div>;
+}
+
+function HouseholdView({ data, accounts, members, onSetup, onEditAccount }: { data: FinanceData; accounts: Account[]; members: Array<{ email: string; display_name: string; role: string; status: string }>; onSetup: () => void; onEditAccount: (account: Account) => void }) {
+  const sharedAccounts = data.accounts.filter((item) => item.space === "household");
+  const personalAccounts = data.accounts.filter((item) => item.space === "personal");
+  const visibleMembers = members.length ? members : [{ email: "Signed-in account", display_name: data.profile.name, role: "owner", status: "active" }, ...(data.profile.partnerEmail ? [{ email: data.profile.partnerEmail, display_name: data.profile.partnerName, role: "member", status: "pending" }] : [])];
+  return <div className="page-stack"><PageHeading eyebrow="Private by default, shared on purpose" title={data.profile.householdName || "Household"} copy="Personal and shared finances feed one combined view without erasing ownership or duplicating transfers."><button className="primary-button" onClick={onSetup}><Settings2 size={17} /> Manage household</button></PageHeading>
+    <section className="household-hero"><div className="household-orbits"><span className="avatar">{data.profile.name.slice(0, 1)}</span><span className="avatar partner-avatar">{data.profile.partnerName?.slice(0, 1) || "P"}</span></div><div><p className="eyebrow hero-eyebrow">Together, with boundaries</p><h2>{formatMoney(sharedAccounts.reduce((sum, item) => sum + item.balance, 0))} shared net worth</h2><p>{sharedAccounts.length} shared accounts · {personalAccounts.length} personal accounts stay private in each member’s Personal view.</p></div></section>
+    <div className="dashboard-grid"><section className="panel members-panel"><PanelHeading eyebrow="People and access" title="Household members" action="Manage" onAction={onSetup} /><div className="member-list">{visibleMembers.map((member) => <div key={member.email}><span className="avatar">{(member.display_name || member.email).slice(0, 1).toUpperCase()}</span><span><strong>{member.display_name || member.email}</strong><small>{member.email}</small></span><span className={member.status === "active" ? "member-status active-member" : "member-status"}>{member.status === "active" ? "Active" : "Invite pending"}</span><small>{member.role}</small></div>)}</div><div className="info-note"><ShieldCheck size={17} /><span>Invited members claim the shared space when they sign in with the same email. Personal records remain in their own space.</span></div></section><section className="panel access-panel"><PanelHeading eyebrow="Ownership map" title="What appears where" /><div className="access-map"><div><span>Personal</span><strong>{personalAccounts.length} accounts</strong><small>Visible to their owner</small></div><ChevronRight size={18} /><div><span>Household</span><strong>{sharedAccounts.length} accounts</strong><small>Visible to active members</small></div><ChevronRight size={18} /><div><span>Together</span><strong>{accounts.length} accounts</strong><small>Combined without duplication</small></div></div></section></div>
+    <section className="panel household-accounts"><PanelHeading eyebrow="Shared balance sheet" title="Accounts this household can see" /><div className="account-card-grid">{sharedAccounts.map((account) => <AccountCard key={account.id} account={account} onEdit={() => onEditAccount(account)} />)}{!sharedAccounts.length && <EmptyState icon={<Users />} title="Nothing shared yet" copy="Edit an account and set Belongs to Household." />}</div></section>
+  </div>;
 }
 
 function ActivityView({ transactions, accounts, search, setSearch, onAdd, onImport, onDelete, onEdit, selectedMonthLabel, selectedMonth, setSelectedMonth, shiftMonth, mode, setMode, filter, setFilter, period, setPeriod }: {
@@ -1059,7 +1354,9 @@ function PageHeading({ eyebrow, title, copy, children }: { eyebrow: string; titl
 function accountIcon(type: AccountType) {
   if (type === "credit") return CreditCard;
   if (type === "investment") return TrendingUp;
-  if (type === "savings") return PiggyBank;
+  if (type === "savings" || type === "cpf" || type === "insurance") return PiggyBank;
+  if (type === "property") return Home;
+  if (type === "loan") return CircleDollarSign;
   return Landmark;
 }
 
@@ -1068,7 +1365,7 @@ function AccountRow({ account }: { account: Account }) {
   return (
     <div className="account-row">
       <span className={`account-icon accent-${account.accent}`}><Icon size={18} /></span>
-      <span className="account-name"><strong>{account.name}</strong><small>{account.institution} · •{account.last4}</small></span>
+      <span className="account-name"><strong>{account.name}</strong><small>{account.institution}{account.last4 ? ` · •${account.last4}` : ` · ${accountTypeLabels[account.type]}`}</small></span>
       <span className="account-scope">{account.space === "household" ? <Users size={13} /> : <UserRound size={13} />}{account.space === "household" ? "Shared" : "Personal"}</span>
       <strong className={account.balance < 0 ? "negative-value" : ""}>{formatMoney(account.balance)}</strong>
     </div>
@@ -1083,7 +1380,7 @@ function AccountCard({ account, onEdit }: { account: Account; onEdit: () => void
       <p>{account.institution}</p>
       <h3>{account.name}</h3>
       <strong>{formatMoney(account.balance)}</strong>
-      <div><span>{accountTypeLabels[account.type]} · •{account.last4}</span><span>{account.space === "household" ? <Users size={14} /> : <UserRound size={14} />}{account.space === "household" ? "Shared" : account.owner}</span></div>
+      <div><span>{accountTypeLabels[account.type]}{account.last4 ? ` · •${account.last4}` : ""}</span><span>{account.space === "household" ? <Users size={14} /> : <UserRound size={14} />}{account.space === "household" ? "Shared" : account.owner}</span></div>
     </button>
   );
 }
@@ -1153,12 +1450,115 @@ function ModalShell({ title, eyebrow, onClose, children }: { title: string; eyeb
   );
 }
 
-function TransactionModal({ initial, accounts, scope, onClose, onSubmit }: { initial?: Transaction | null; accounts: Account[]; scope: ViewScope; onClose: () => void; onSubmit: (transaction: Transaction) => void }) {
+type SpeechRecognizer = {
+  lang: string;
+  interimResults: boolean;
+  continuous: boolean;
+  start: () => void;
+  stop: () => void;
+  onresult: ((event: { results: ArrayLike<{ 0: { transcript: string }; isFinal: boolean }> }) => void) | null;
+  onend: (() => void) | null;
+  onerror: (() => void) | null;
+};
+
+function localCaptureDraft(text: string, accounts: Account[], scope: ViewScope): Partial<Transaction> {
+  const lower = text.toLowerCase();
+  const amountMatch = text.match(/(?:s\$|\$)?\s*(\d+(?:\.\d{1,2})?)/i);
+  const type: TransactionType = /\b(transfer|move|shift|paynow to)\b/.test(lower) ? "transfer" : /\b(salary|income|earned|received|refund)\b/.test(lower) ? "income" : "expense";
+  const account = accounts.find((item) => lower.includes(item.name.toLowerCase()) || lower.includes(item.institution.toLowerCase())) || accounts.find((item) => item.space === (scope === "household" ? "household" : "personal")) || accounts[0];
+  const destination = type === "transfer" ? accounts.find((item) => item.id !== account?.id && lower.includes(item.name.toLowerCase())) : undefined;
+  const category = /grab|taxi|mrt|bus|transport/.test(lower) ? "Transport" : /grocery|fairprice|cold storage|supermarket/.test(lower) ? "Groceries" : /netflix|movie|spotify|entertainment/.test(lower) ? "Entertainment" : /doctor|gym|health|physio/.test(lower) ? "Health" : /rent|utility|home/.test(lower) ? "Home" : /trip|flight|hotel|travel/.test(lower) ? "Travel" : "Food & dining";
+  let description = text.replace(/(?:s\$|\$)?\s*\d+(?:\.\d{1,2})?/i, "").replace(/\b(i|just|spent|paid|received|earned|transfer|transferred|move|moved|dollars?|bucks?|at|from|using|today|yesterday)\b/gi, " ").replace(/\s+/g, " ").trim();
+  description = description.replace(/^to\s+/i, "").replace(/\s+to\s+.+$/i, "").trim() || (type === "transfer" ? "Account transfer" : type === "income" ? "Income" : "Expense");
+  return { type, amount: amountMatch ? Number(amountMatch[1]) : undefined, description, date: todayIso(), category: type === "expense" ? category : type === "income" ? "Income" : "Transfer", accountId: account?.id, transferAccountId: destination?.id, space: account?.space || (scope === "household" ? "household" : "personal"), source: "voice" };
+}
+
+function CaptureModal({ accounts, profile, scope, qwenConfigured, onClose, onTransaction, onPlan, onAsk, onProfile }: { accounts: Account[]; profile: FinanceData["profile"]; scope: ViewScope; qwenConfigured: boolean; onClose: () => void; onTransaction: (draft: Partial<Transaction>) => void; onPlan: (event: PlannedEvent) => void; onAsk: (prompt: string) => void; onProfile: (profile: FinanceData["profile"]) => void }) {
+  const [intent, setIntent] = useState<"transaction" | "plan" | "question">("transaction");
+  const [inputMode, setInputMode] = useState<"voice" | "type">("voice");
+  const [text, setText] = useState("");
+  const [listening, setListening] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [error, setError] = useState("");
+  const [newWord, setNewWord] = useState("");
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const speechRef = useRef<SpeechRecognizer | null>(null);
+
+  useEffect(() => () => { speechRef.current?.stop(); recorderRef.current?.stop(); streamRef.current?.getTracks().forEach((track) => track.stop()); }, []);
+
+  async function transcribeBlob(blob: Blob) {
+    setProcessing(true);
+    try {
+      const audio = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(blob); });
+      const response = await fetch("/api/voice", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ audio, locale: profile.voiceLocale || "en-SG", lexicon: profile.voiceLexicon || [] }) });
+      const payload = await response.json() as { transcript?: string; error?: string };
+      if (!response.ok || !payload.transcript) throw new Error(payload.error || "Voice transcription failed");
+      setText(payload.transcript); setError("");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Voice transcription failed"); }
+    finally { setProcessing(false); }
+  }
+
+  async function startVoice() {
+    setError("");
+    if (qwenConfigured && navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined") {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const recorder = new MediaRecorder(stream);
+        streamRef.current = stream; recorderRef.current = recorder; chunksRef.current = [];
+        recorder.ondataavailable = (event) => { if (event.data.size) chunksRef.current.push(event.data); };
+        recorder.onstop = () => { const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" }); stream.getTracks().forEach((track) => track.stop()); streamRef.current = null; if (blob.size) transcribeBlob(blob); };
+        recorder.start(); setListening(true); return;
+      } catch { setError("Microphone access was not available. You can type instead."); setInputMode("type"); return; }
+    }
+    const constructors = window as unknown as { SpeechRecognition?: new () => SpeechRecognizer; webkitSpeechRecognition?: new () => SpeechRecognizer };
+    const Recognition = constructors.SpeechRecognition || constructors.webkitSpeechRecognition;
+    if (!Recognition) { setError("Voice capture is not supported in this browser yet. You can type the same sentence."); setInputMode("type"); return; }
+    const recognition = new Recognition(); speechRef.current = recognition; recognition.lang = profile.voiceLocale || "en-SG"; recognition.interimResults = true; recognition.continuous = false;
+    recognition.onresult = (event) => { let transcript = ""; for (let index = 0; index < event.results.length; index += 1) transcript += event.results[index][0].transcript; setText(transcript.trim()); };
+    recognition.onend = () => setListening(false); recognition.onerror = () => { setListening(false); setError("I couldn’t hear that clearly. Try again or type it."); };
+    recognition.start(); setListening(true);
+  }
+
+  function stopVoice() { if (recorderRef.current?.state === "recording") recorderRef.current.stop(); speechRef.current?.stop(); setListening(false); }
+
+  async function continueCapture() {
+    const trimmed = text.trim(); if (!trimmed) { setError("Say or type something first."); return; }
+    if (intent === "question") { onAsk(trimmed); return; }
+    if (intent === "plan") {
+      const amount = Number(trimmed.match(/(?:s\$|\$)?\s*(\d+(?:\.\d{1,2})?)/i)?.[1] || 0);
+      const target = new Date(); target.setMonth(target.getMonth() + 6);
+      onPlan({ id: uid("event"), name: trimmed.replace(/(?:s\$|\$)?\s*\d+(?:\.\d{1,2})?/i, "").replace(/\b(plan|budget|for|a|an)\b/gi, " ").replace(/\s+/g, " ").trim() || "Future plan", amount, date: target.toISOString().slice(0, 10), kind: /trip|holiday|japan|travel|flight/i.test(trimmed) ? "travel" : /car|lambo/i.test(trimmed) ? "car" : /home|reno|house/i.test(trimmed) ? "home" : "other", space: scope === "household" ? "household" : "personal", includeInPlan: true, note: trimmed });
+      return;
+    }
+    let draft = localCaptureDraft(trimmed, accounts, scope);
+    if (qwenConfigured) {
+      setProcessing(true);
+      try {
+        const response = await fetch("/api/coach", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "capture", prompt: trimmed, lexicon: profile.voiceLexicon }) });
+        const payload = await response.json() as { parsed?: { intent?: TransactionType; description?: string; amount?: number; date?: string; category?: string; sourceAccount?: string; destinationAccount?: string } };
+        if (response.ok && payload.parsed) {
+          const parsed = payload.parsed; const source = accounts.find((item) => [item.name, item.institution].some((value) => parsed.sourceAccount?.toLowerCase().includes(value.toLowerCase()))) || accounts.find((item) => item.id === draft.accountId); const destination = accounts.find((item) => [item.name, item.institution].some((value) => parsed.destinationAccount?.toLowerCase().includes(value.toLowerCase())));
+          draft = { ...draft, type: parsed.intent || draft.type, description: parsed.description || draft.description, amount: parsed.amount || draft.amount, date: parsed.date || draft.date, category: parsed.category || draft.category, accountId: source?.id || draft.accountId, transferAccountId: destination?.id || draft.transferAccountId };
+        }
+      } catch { /* local parser remains available */ }
+      finally { setProcessing(false); }
+    }
+    onTransaction(draft);
+  }
+
+  function addLexiconWord() { const value = newWord.trim(); if (!value) return; onProfile({ ...profile, voiceLexicon: [...new Set([...(profile.voiceLexicon || []), value])] }); setNewWord(""); }
+
+  return <ModalShell eyebrow="Voice-first financial capture" title="Tell Lifetime" onClose={onClose}><div className="capture-shell"><div className="capture-intents">{(["transaction", "plan", "question"] as const).map((item) => <button key={item} className={intent === item ? "capture-intent-active" : ""} onClick={() => setIntent(item)}>{item === "transaction" ? <ArrowLeftRight size={17} /> : item === "plan" ? <CalendarDays size={17} /> : <MessageCircle size={17} />}{item === "transaction" ? "Log money" : item === "plan" ? "Plan ahead" : "Ask Coach"}</button>)}</div><div className="capture-mode-switch"><button className={inputMode === "voice" ? "active" : ""} onClick={() => setInputMode("voice")}><Mic size={16} /> Talk</button><button className={inputMode === "type" ? "active" : ""} onClick={() => setInputMode("type")}><Edit3 size={16} /> Type</button></div>{inputMode === "voice" && <div className={listening ? "voice-stage voice-listening" : "voice-stage"}><button className="voice-orb" onClick={listening ? stopVoice : startVoice} aria-label={listening ? "Stop listening" : "Start listening"}><span><Mic size={28} /></span><i /><i /><i /></button><strong>{processing ? "Understanding your words…" : listening ? "I’m listening… tap when finished" : "Tap, then speak naturally"}</strong><p>{qwenConfigured ? "Qwen speech recognises multilingual accents; your own vocabulary nudges exact spellings." : "Browser speech capture is active. Qwen speech will take over when its key is connected."}</p></div>}<label className="field capture-transcript"><span>{inputMode === "voice" ? "Transcript — correct anything before continuing" : intent === "transaction" ? "Try “Spent $13.80 at Yochi on Revolut”" : intent === "plan" ? "Try “Plan $12,000 for Japan next April”" : "What do you want to understand?"}</span><textarea autoFocus={inputMode === "type"} value={text} onChange={(event) => setText(event.target.value)} placeholder="Your words appear here…" /></label><div className="voice-lexicon"><div><strong>Your vocabulary</strong><small>Names, Singlish, merchants and community terms that should be spelt exactly.</small></div><div className="lexicon-tags">{(profile.voiceLexicon || []).slice(0, 8).map((word) => <span key={word}>{word}</span>)}</div><div className="lexicon-add"><input value={newWord} onChange={(event) => setNewWord(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addLexiconWord(); } }} placeholder="Add Yochi, PayNow…" /><button onClick={addLexiconWord}><Plus size={16} /></button></div></div>{error && <p className="form-error">{error}</p>}<div className="form-actions"><button className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" onClick={continueCapture} disabled={processing}>{processing ? "Understanding…" : intent === "transaction" ? "Review transaction" : intent === "plan" ? "Add to forecast" : "Ask Coach"}</button></div></div></ModalShell>;
+}
+
+function TransactionModal({ initial, accounts, scope, onClose, onSubmit }: { initial?: Partial<Transaction> | null; accounts: Account[]; scope: ViewScope; onClose: () => void; onSubmit: (transaction: Transaction) => void }) {
   const defaultAccount = accounts.find((account) => account.space === (scope === "all" ? "personal" : scope)) || accounts[0];
   const [type, setType] = useState<TransactionType>(initial?.type || "expense");
-  const [amount, setAmount] = useState(initial ? String(initial.amount) : "");
+  const [amount, setAmount] = useState(initial?.amount != null ? String(initial.amount) : "");
   const [description, setDescription] = useState(initial?.description || "");
-  const [category, setCategory] = useState(initial?.type === "expense" ? initial.category : expenseCategories[0]);
+  const [category, setCategory] = useState(initial?.type === "expense" ? initial.category || expenseCategories[0] : expenseCategories[0]);
   const [date, setDate] = useState(initial?.date || todayIso());
   const [accountId, setAccountId] = useState(initial?.accountId || defaultAccount?.id || "");
   const [transferAccountId, setTransferAccountId] = useState(initial?.transferAccountId || "");
@@ -1191,7 +1591,7 @@ function TransactionModal({ initial, accounts, scope, onClose, onSubmit }: { ini
   }
 
   return (
-    <ModalShell eyebrow={initial ? "Update the ledger" : "Quick capture"} title={initial ? "Edit transaction" : "Add transaction"} onClose={onClose}>
+    <ModalShell eyebrow={initial?.id ? "Update the ledger" : "Quick capture"} title={initial?.id ? "Edit transaction" : "Review transaction"} onClose={onClose}>
       <form className="form-stack" onSubmit={submit}>
         <div className="type-switcher">
           {(["expense", "income", "transfer"] as TransactionType[]).map((option) => <button type="button" key={option} className={type === option ? "type-active" : ""} onClick={() => setType(option)}>{option === "expense" ? <ArrowUpRight size={16} /> : option === "income" ? <ArrowDownLeft size={16} /> : <ArrowLeftRight size={16} />}{option}</button>)}
@@ -1209,7 +1609,7 @@ function TransactionModal({ initial, accounts, scope, onClose, onSubmit }: { ini
           <label className="field"><span>Note (optional)</span><input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Add context" /></label>
         </div>
         {type === "transfer" && <div className="info-note"><ShieldCheck size={17} /><span>This moves money between accounts. It will not change your income, spending, or savings rate.</span></div>}
-        <div className="form-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">{initial ? "Save changes" : `Save ${type}`}</button></div>
+        <div className="form-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">{initial?.id ? "Save changes" : `Save ${type}`}</button></div>
       </form>
     </ModalShell>
   );
@@ -1227,7 +1627,8 @@ function AccountModal({ initial, scope, profileName, partnerName, onClose, onSub
     event.preventDefault();
     const parsed = Number(balance);
     if (!name.trim() || !institution.trim() || !Number.isFinite(parsed)) return;
-    onSubmit({ id: initial?.id || uid("acct"), name: name.trim(), institution: institution.trim(), type, balance: parsed, space, owner: space === "household" ? `${profileName} + ${partnerName}` : profileName, currency: initial?.currency || "SGD", last4: last4.slice(-4), accent: initial?.accent || accountAccents[Math.floor(Math.random() * accountAccents.length)] });
+    const normalizedBalance = ["credit", "loan"].includes(type) && parsed > 0 ? -parsed : parsed;
+    onSubmit({ id: initial?.id || uid("acct"), name: name.trim(), institution: institution.trim(), type, balance: normalizedBalance, space, owner: space === "household" ? `${profileName} + ${partnerName}` : profileName, currency: initial?.currency || "SGD", last4: last4.slice(-4), accent: initial?.accent || accountAccents[Math.floor(Math.random() * accountAccents.length)] });
   }
 
   return (
@@ -1237,7 +1638,7 @@ function AccountModal({ initial, scope, profileName, partnerName, onClose, onSub
           <label className="field"><span>Account name</span><input autoFocus required value={name} onChange={(event) => setName(event.target.value)} placeholder="Rainy day fund" /></label>
           <label className="field"><span>Institution</span><input required value={institution} onChange={(event) => setInstitution(event.target.value)} placeholder="DBS, HSBC, Revolut…" /></label>
           <label className="field"><span>Account type</span><select value={type} onChange={(event) => setType(event.target.value as AccountType)}>{Object.entries(accountTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-          <label className="field"><span>Current balance</span><input required type="number" step="0.01" value={balance} onChange={(event) => setBalance(event.target.value)} placeholder="0.00" /></label>
+          <label className="field"><span>{["credit", "loan"].includes(type) ? "Amount owed" : "Current value or balance"}</span><input required type="number" step="0.01" value={balance} onChange={(event) => setBalance(event.target.value)} placeholder="0.00" /></label>
           <label className="field"><span>Belongs to</span><select value={space} onChange={(event) => setSpace(event.target.value as SpaceId)}><option value="personal">Personal</option><option value="household">Household</option></select></label>
           <label className="field"><span>Last four digits (optional)</span><input maxLength={4} inputMode="numeric" value={last4} onChange={(event) => setLast4(event.target.value.replace(/\D/g, ""))} placeholder="2841" /></label>
         </div>
@@ -1252,6 +1653,8 @@ function HouseholdModal({ profile, viewerEmail, onClose, onSubmit }: { profile: 
   const [householdName, setHouseholdName] = useState(profile.householdName);
   const [partnerName, setPartnerName] = useState(profile.partnerName || "");
   const [partnerEmail, setPartnerEmail] = useState(profile.partnerEmail || "");
+  const [voiceLocale, setVoiceLocale] = useState(profile.voiceLocale || "en-SG");
+  const [voiceLexicon, setVoiceLexicon] = useState((profile.voiceLexicon || []).join(", "));
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -1263,6 +1666,8 @@ function HouseholdModal({ profile, viewerEmail, onClose, onSubmit }: { profile: 
       partnerName: partnerName.trim(),
       partnerEmail: partnerEmail.trim(),
       householdStartedAt: profile.householdStartedAt || todayIso(),
+      voiceLocale,
+      voiceLexicon: voiceLexicon.split(",").map((item) => item.trim()).filter(Boolean),
     });
   }
 
@@ -1278,8 +1683,10 @@ function HouseholdModal({ profile, viewerEmail, onClose, onSubmit }: { profile: 
           <label className="field"><span>Household name</span><input required value={householdName} onChange={(event) => setHouseholdName(event.target.value)} placeholder="Parker household" /></label>
           <label className="field"><span>Partner or family member</span><input required value={partnerName} onChange={(event) => setPartnerName(event.target.value)} placeholder="Their name" /></label>
           <label className="field"><span>Their email</span><input type="email" value={partnerEmail} onChange={(event) => setPartnerEmail(event.target.value)} placeholder="partner@example.com" /></label>
+          <label className="field"><span>Voice and accent region</span><select value={voiceLocale} onChange={(event) => setVoiceLocale(event.target.value)}><option value="en-SG">English · Singapore</option><option value="en-IN">English · India</option><option value="en-GB">English · United Kingdom</option><option value="en-US">English · United States</option><option value="ms-MY">Malay · Malaysia</option><option value="zh-SG">Mandarin · Singapore</option></select></label>
+          <label className="field"><span>Voice vocabulary</span><input value={voiceLexicon} onChange={(event) => setVoiceLexicon(event.target.value)} placeholder="Yochi, PayNow, kopitiam…" /></label>
         </div>
-        <div className="info-note"><ShieldCheck size={17} /><span>Use Personal for private accounts and Household for shared ones. Together combines both without duplicating transfers. This setup is saved to your signed-in workspace; live invitations and cross-device syncing are part of the cloud-data step before App Store launch.</span></div>
+        <div className="info-note"><ShieldCheck size={17} /><span>Use Personal for private accounts and Household for shared ones. An invite is claimed when that person signs in with the same email. Together combines both spaces without counting transfers as spending.</span></div>
         <div className="form-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">Save household</button></div>
       </form>
     </ModalShell>
@@ -1291,6 +1698,8 @@ function GoalModal({ scope, onClose, onSubmit }: { scope: ViewScope; onClose: ()
   const [target, setTarget] = useState("");
   const [current, setCurrent] = useState("");
   const [targetDate, setTargetDate] = useState("");
+  const [monthlyContribution, setMonthlyContribution] = useState("");
+  const [priority, setPriority] = useState<NonNullable<Goal["priority"]>>("important");
   const [space, setSpace] = useState<SpaceId>(scope === "household" ? "household" : "personal");
 
   function submit(event: FormEvent) {
@@ -1298,7 +1707,7 @@ function GoalModal({ scope, onClose, onSubmit }: { scope: ViewScope; onClose: ()
     const targetAmount = Number(target);
     const currentAmount = Number(current || 0);
     if (!name.trim() || !targetDate || targetAmount <= 0) return;
-    onSubmit({ id: uid("goal"), name: name.trim(), target: targetAmount, current: currentAmount, targetDate, space, icon: space === "household" ? "home" : "spark" });
+    onSubmit({ id: uid("goal"), name: name.trim(), target: targetAmount, current: currentAmount, targetDate, space, icon: space === "household" ? "home" : "spark", monthlyContribution: Math.max(0, Number(monthlyContribution) || 0), priority });
   }
 
   return (
@@ -1309,12 +1718,28 @@ function GoalModal({ scope, onClose, onSubmit }: { scope: ViewScope; onClose: ()
           <label className="field"><span>Target amount</span><input required type="number" min="1" step="1" value={target} onChange={(event) => setTarget(event.target.value)} placeholder="30000" /></label>
           <label className="field"><span>Already saved</span><input type="number" min="0" step="1" value={current} onChange={(event) => setCurrent(event.target.value)} placeholder="0" /></label>
           <label className="field"><span>Target date</span><input required type="date" value={targetDate} onChange={(event) => setTargetDate(event.target.value)} /></label>
+          <label className="field"><span>Monthly contribution</span><input type="number" min="0" step="1" value={monthlyContribution} onChange={(event) => setMonthlyContribution(event.target.value)} placeholder="800" /></label>
+          <label className="field"><span>Priority</span><select value={priority} onChange={(event) => setPriority(event.target.value as NonNullable<Goal["priority"]>)}><option value="essential">Essential</option><option value="important">Important</option><option value="flexible">Flexible</option></select></label>
           <label className="field"><span>Goal space</span><select value={space} onChange={(event) => setSpace(event.target.value as SpaceId)}><option value="personal">Personal</option><option value="household">Household</option></select></label>
         </div>
         <div className="form-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">Create goal</button></div>
       </form>
     </ModalShell>
   );
+}
+
+function PlannedEventModal({ scope, onClose, onSubmit }: { scope: ViewScope; onClose: () => void; onSubmit: (event: PlannedEvent) => void }) {
+  const [name, setName] = useState("");
+  const [amount, setAmount] = useState("");
+  const [date, setDate] = useState("");
+  const [kind, setKind] = useState<PlannedEvent["kind"]>("travel");
+  const [space, setSpace] = useState<SpaceId>(scope === "household" ? "household" : "personal");
+  const [note, setNote] = useState("");
+  function submit(event: FormEvent) {
+    event.preventDefault(); const parsed = Number(amount); if (!name.trim() || !date || parsed <= 0) return;
+    onSubmit({ id: uid("event"), name: name.trim(), amount: parsed, date, kind, space, includeInPlan: true, note: note.trim() || undefined });
+  }
+  return <ModalShell eyebrow="Life happens in the forecast" title="Plan a future event" onClose={onClose}><form className="form-stack" onSubmit={submit}><div className="form-grid"><label className="field full-field"><span>What are you planning?</span><input autoFocus required value={name} onChange={(event) => setName(event.target.value)} placeholder="Japan in spring" /></label><label className="field"><span>Estimated total cost</span><input required type="number" min="1" step="1" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="12000" /></label><label className="field"><span>When</span><input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label className="field"><span>Kind of plan</span><select value={kind} onChange={(event) => setKind(event.target.value as PlannedEvent["kind"])}><option value="travel">Travel</option><option value="home">Home</option><option value="family">Family</option><option value="education">Education</option><option value="car">Car</option><option value="other">Other</option></select></label><label className="field"><span>Plan space</span><select value={space} onChange={(event) => setSpace(event.target.value as SpaceId)}><option value="personal">Personal</option><option value="household">Household</option></select></label><label className="field full-field"><span>Assumptions or notes</span><input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Flights, hotels, food and shopping" /></label></div><div className="info-note"><WandSparkles size={17} /><span>Lifetime will compare this cost with your monthly surplus and goal contributions, then show the estimated timing trade-off.</span></div><div className="form-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">Add to forecast</button></div></form></ModalShell>;
 }
 
 function RecurringModal({ scope, accounts, onClose, onSubmit }: { scope: ViewScope; accounts: Account[]; onClose: () => void; onSubmit: (item: RecurringItem) => void }) {
@@ -1387,7 +1812,7 @@ function ImportModal({ data, scope, onClose, setData, notify }: { data: FinanceD
     <ModalShell eyebrow="Sheets and statements" title="Import transactions" onClose={onClose}>
       <div className="import-copy"><span className="import-icon"><FileSpreadsheet size={22} /></span><div><strong>Paste rows from Google Sheets or a CSV</strong><p>Use the columns date, description, amount, type, category, and account. Negative amounts become expenses when type is blank.</p></div></div>
       <textarea className="import-textarea" value={text} onChange={(event) => { setText(event.target.value); setError(""); }} aria-label="Transaction CSV data" />
-      <div className="info-note"><ShieldCheck size={17} /><span>Your pasted data stays on this device. Imported transfers are intentionally skipped so they can be linked safely in the ledger.</span></div>
+      <div className="info-note"><ShieldCheck size={17} /><span>Imported rows are saved to your signed-in workspace. Transfers are intentionally skipped here so they can be linked safely between two accounts in the ledger.</span></div>
       {error && <p className="form-error">{error}</p>}
       <div className="form-actions"><button className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" onClick={importRows}>Import rows</button></div>
     </ModalShell>

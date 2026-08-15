@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 const siteTitle = "Lifetime — Finance for the life you’re building";
-const siteDescription = "A calm personal and household finance hub for accounts, spending, transfers, goals, and the future you are building together.";
+const siteDescription = "A voice-first personal and household finance hub for trusted transactions, shared money, intelligent goals, and the future you are building.";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -37,13 +37,13 @@ export async function generateMetadata(): Promise<Metadata> {
       title: siteTitle,
       description: siteDescription,
       type: "website",
-      images: [{ url: new URL("/og.png", base), width: 1200, height: 675, alt: "Lifetime finance hub" }],
+      images: [{ url: new URL("/og-v5.png", base), width: 1200, height: 675, alt: "Lifetime voice-first finance hub" }],
     },
     twitter: {
       card: "summary_large_image",
       title: siteTitle,
       description: siteDescription,
-      images: [new URL("/og.png", base)],
+      images: [new URL("/og-v5.png", base)],
     },
   };
 }
