@@ -257,6 +257,12 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
   }
 
   function openNewTransaction(type?: TransactionType) {
+    if (!data.accounts.length) {
+      setEditingAccount(null);
+      setModal("account");
+      notify("Add an account before recording transactions.");
+      return;
+    }
     setEditingTransaction(null);
     if (type) setActivityFilter(type);
     setModal("transaction");
@@ -340,6 +346,16 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
     setActiveView("activity");
   }
 
+  function openImport() {
+    if (!data.accounts.length) {
+      setEditingAccount(null);
+      setModal("account");
+      notify("Add an account before importing transactions.");
+      return;
+    }
+    setModal("import");
+  }
+
   function addGoal(goal: Goal) {
     setData((current) => ({ ...current, goals: [...current.goals, goal] }));
     setModal(null);
@@ -383,10 +399,11 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
   }
 
   function resetSample() {
-    setData(createViewerSeed(viewer));
+    if (!window.confirm("Clear every sample account, transaction, goal, and recurring payment? Your household profile will stay in place.")) return;
+    setData((current) => ({ ...createViewerSeed(viewer), profile: current.profile, accounts: [], transactions: [], goals: [], recurring: [] }));
     setScope("all");
     setActiveView("overview");
-    notify("Sample workspace restored.");
+    notify("Sample data cleared. Add your first account when you’re ready.");
   }
 
   return (
@@ -504,7 +521,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
               search={search}
               setSearch={setSearch}
               onAdd={() => openNewTransaction()}
-              onImport={() => setModal("import")}
+              onImport={openImport}
               onDelete={deleteTransaction}
               onEdit={openEditTransaction}
               selectedMonthLabel={selectedMonthLabel}
@@ -555,7 +572,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
               savingsRate={savingsRate}
               recurringCost={activeRecurringCost}
               onExport={exportData}
-              onImport={() => setModal("import")}
+              onImport={openImport}
               onReset={resetSample}
             />
           )}
@@ -694,7 +711,7 @@ function Overview({
         <section className="panel accounts-panel">
           <PanelHeading eyebrow="Accounts" title="Where your money lives" action="See all" onAction={() => onView("accounts")} />
           <div className="account-list">
-            {accounts.slice(0, 4).map((account) => <AccountRow key={account.id} account={account} />)}
+            {accounts.length ? accounts.slice(0, 4).map((account) => <AccountRow key={account.id} account={account} />) : <EmptyState icon={<WalletCards />} title="Add your first account" copy="Start with a bank, card, cash, or investment account." />}
           </div>
         </section>
 
@@ -719,7 +736,7 @@ function Overview({
         <section className="panel activity-panel">
           <PanelHeading eyebrow="Activity" title="Recent transactions" action="See all" onAction={() => onView("activity")} />
           <div className="transaction-list compact-list">
-            {transactions.slice(0, 6).map((transaction) => <TransactionRow key={transaction.id} transaction={transaction} accounts={data.accounts} />)}
+            {transactions.length ? transactions.slice(0, 6).map((transaction) => <TransactionRow key={transaction.id} transaction={transaction} accounts={data.accounts} />) : <EmptyState icon={<ArrowLeftRight />} title="No activity yet" copy="Transactions you add or import will appear here." />}
           </div>
         </section>
 
@@ -741,13 +758,13 @@ function Overview({
         <section className="panel recurring-panel">
           <PanelHeading eyebrow="On the horizon" title="Upcoming payments" action="Manage" onAction={() => onView("plans")} />
           <div className="upcoming-list">
-            {recurring.filter((item) => item.active).slice(0, 3).map((item) => (
+            {recurring.some((item) => item.active) ? recurring.filter((item) => item.active).slice(0, 3).map((item) => (
               <div key={item.id}>
                 <span className="date-tile"><strong>{new Date(`${item.nextDate}T12:00:00`).getDate()}</strong><small>{new Date(`${item.nextDate}T12:00:00`).toLocaleDateString("en-SG", { month: "short" })}</small></span>
                 <span className="upcoming-name"><strong>{item.name}</strong><small>{item.cadence}</small></span>
                 <strong>{formatMoney(item.amount)}</strong>
               </div>
-            ))}
+            )) : <EmptyState icon={<Repeat2 />} title="Nothing scheduled" copy="Add recurring bills to see what’s coming." />}
           </div>
         </section>
       </div>
@@ -1004,7 +1021,7 @@ function InsightsView({ monthSeries, maxSeriesValue, categoryTotals, monthSpendi
           <h3>{formatMoney(recurringCost)}<small> / month</small></h3>
           <p>Your recurring payments are visible before they land.</p>
           <div className="commitment-line"><span>Subscriptions & bills</span><strong>{formatMoney(recurringCost)}</strong></div>
-          <button className="text-button danger-text" onClick={onReset}>Restore sample workspace</button>
+          <button className="text-button danger-text" onClick={onReset}>Clear sample data and start fresh</button>
         </div>
       </section>
     </div>
