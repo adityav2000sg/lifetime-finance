@@ -1,36 +1,39 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Lifetime Finance
 
-## Getting Started
+Lifetime is a mobile-first personal and household finance hub. It combines private finances and shared household money without hiding or deleting either side, and it models transfers as balance movements rather than spending or income.
 
-First, run the development server:
+## Current product
+
+- Personal, household, and combined financial views
+- Bank, savings, credit, investment, and cash accounts
+- Unified income, expense, and transfer ledger
+- Account balance updates with reversible transaction deletion
+- Shared and personal savings goals with contributions
+- Recurring payment tracking and monthly commitment estimates
+- Google Sheets and CSV paste import
+- Private JSON backup export
+- Six-month cash-flow and category insights
+- Responsive mobile navigation and installable web-app metadata
+- Device-local versioned persistence for the current prototype
+
+## Run locally
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open the local address shown by Next.js.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Production build
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run build
+npm start
+```
 
-## Learn More
+## Product architecture
 
-To learn more about Next.js, take a look at the following resources:
+The core domain types live in `src/lib/finance.ts`. The interface is in `src/components/LifetimeFinanceHub.tsx`, with the visual system in `src/app/globals.css`.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The current repository is a polished, local-first product prototype. Live multi-device collaboration, authentication, direct banking connections, and native App Store distribution require a hosted API/database and platform credentials. The transaction and ownership model is structured so those services can replace the local persistence layer without changing the finance concepts or interface.
