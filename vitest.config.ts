@@ -1,8 +1,7 @@
 import { defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 
-// A standalone config so tests do not load the Cloudflare/vinext build plugins
-// from vite.config.ts. The money logic under test is plain TypeScript.
+// The financial domain tests run as plain TypeScript without a browser.
 export default defineConfig({
   test: {
     environment: "node",

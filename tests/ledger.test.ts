@@ -5,8 +5,20 @@ import {
   Transaction,
   applyTransaction,
   buildForecast,
+  createEmptyFinanceData,
   monthKey,
 } from "@/lib/finance";
+
+describe("first-run workspace", () => {
+  it("starts without invented financial records", () => {
+    const data = createEmptyFinanceData({ name: "Aditya", householdName: "Vaidya household" });
+    expect(data.profile.name).toBe("Aditya");
+    expect(data.accounts).toEqual([]);
+    expect(data.transactions).toEqual([]);
+    expect(data.goals).toEqual([]);
+    expect(data.recurring).toEqual([]);
+  });
+});
 
 function account(id: string, balance: number, overrides: Partial<Account> = {}): Account {
   return {

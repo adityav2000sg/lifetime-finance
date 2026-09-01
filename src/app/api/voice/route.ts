@@ -1,4 +1,8 @@
+import { getAuthenticatedUser } from "@/lib/supabase/server";
+
 export async function POST(request: Request) {
+  const { user } = await getAuthenticatedUser();
+  if (!user) return Response.json({ error: "Sign in required" }, { status: 401 });
   const apiKey = process.env.DASHSCOPE_API_KEY;
   const baseUrl = (process.env.QWEN_BASE_URL || "https://dashscope-intl.aliyuncs.com/compatible-mode/v1").replace(/\/$/, "");
   if (!apiKey) return Response.json({ error: "Qwen speech is not configured" }, { status: 503 });

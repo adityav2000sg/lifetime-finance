@@ -12,11 +12,15 @@ function qwenConfig() {
 }
 
 export async function GET() {
+  const { user } = await getAuthenticatedUser();
+  if (!user) return Response.json({ error: "Sign in required" }, { status: 401 });
   const { apiKey, model } = qwenConfig();
   return Response.json({ configured: Boolean(apiKey), model });
 }
 
 export async function POST(request: Request) {
+  const { user } = await getAuthenticatedUser();
+  if (!user) return Response.json({ error: "Sign in required" }, { status: 401 });
   const { apiKey, baseUrl, model } = qwenConfig();
   if (!apiKey) return Response.json({ error: "Qwen is not configured" }, { status: 503 });
   try {
@@ -55,3 +59,4 @@ export async function POST(request: Request) {
     return Response.json({ error: error instanceof Error ? error.message : "Qwen request failed" }, { status: 500 });
   }
 }
+import { getAuthenticatedUser } from "@/lib/supabase/server";

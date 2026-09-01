@@ -25,6 +25,7 @@ import {
   LayoutDashboard,
   Leaf,
   List,
+  LogOut,
   Menu,
   MessageCircle,
   Mic,
@@ -62,7 +63,7 @@ import {
   applyTransaction,
   buildForecast,
   categoryColors,
-  createSeedData,
+  createEmptyFinanceData,
   expenseCategories,
   formatDate,
   formatMoney,
@@ -108,22 +109,13 @@ type Viewer = {
 };
 
 function createViewerSeed(viewer: Viewer) {
-  const seed = createSeedData();
   const emailName = viewer.email.split("@")[0];
   const displayName = viewer.displayName === viewer.email ? emailName : viewer.displayName;
   const firstName = displayName.split(/\s+/)[0] || "You";
-  return {
-    ...seed,
-    profile: {
-      name: displayName,
-      partnerName: "Partner",
-      householdName: `${firstName}’s household`,
-      partnerEmail: "",
-    },
-  };
+  return createEmptyFinanceData({ name: displayName, householdName: `${firstName}’s household` });
 }
 
-export default function LifetimeFinanceHub({ viewer }: { viewer: Viewer }) {
+export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Viewer; signOutPath: string }) {
   const [data, setData] = useState<FinanceData>(() => createViewerSeed(viewer));
   const [scope, setScope] = useState<ViewScope>("all");
   const [activeView, setActiveView] = useState<ViewId>("today");
@@ -154,6 +146,7 @@ export default function LifetimeFinanceHub({ viewer }: { viewer: Viewer }) {
     async function hydrate() {
       try {
         const response = await fetch("/api/finance", { cache: "no-store" });
+        if (response.status === 401) { window.location.assign("/login"); return; }
         if (!response.ok) throw new Error("cloud unavailable");
         const payload = await response.json() as { data?: Partial<FinanceData> | null; members?: typeof householdMembers };
         if (cancelled) return;
@@ -185,7 +178,10 @@ export default function LifetimeFinanceHub({ viewer }: { viewer: Viewer }) {
     const timer = window.setTimeout(async () => {
       try {
         const response = await fetch("/api/finance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+        if (response.status === 401) { window.location.assign("/login"); return; }
         if (!response.ok) throw new Error("save failed");
+        const payload = await response.json() as { members?: typeof householdMembers };
+        if (payload.members) setHouseholdMembers(payload.members);
         setSyncStatus("saved");
       } catch { setSyncStatus("offline"); }
     }, 650);
@@ -441,12 +437,12 @@ export default function LifetimeFinanceHub({ viewer }: { viewer: Viewer }) {
     notify("A private backup was downloaded.");
   }
 
-  function resetSample() {
-    if (!window.confirm("Clear every sample account, transaction, goal, and recurring payment? Your household profile will stay in place.")) return;
+  function clearWorkspace() {
+    if (!window.confirm("Clear every account, transaction, goal, recurring payment, and plan? Your profile and household setup will stay in place.")) return;
     setData((current) => ({ ...createViewerSeed(viewer), profile: current.profile, accounts: [], transactions: [], goals: [], recurring: [], spendingPlans: [], plannedEvents: [], inbox: [] }));
     setScope("all");
     setActiveView("today");
-    notify("Sample data cleared. Add your first account when you’re ready.");
+    notify("Workspace cleared. Add your first account when you’re ready.");
   }
 
   return (
@@ -490,7 +486,10 @@ export default function LifetimeFinanceHub({ viewer }: { viewer: Viewer }) {
         <div className="profile-chip">
           <span className="avatar">{data.profile.name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</span>
           <div><strong>{data.profile.name}</strong><small>{viewer.email}</small></div>
-          <span className="profile-actions"><button className="signout-button" onClick={() => { setModal("household"); setMobileMenu(false); }} aria-label="Household settings" title="Household settings"><Settings2 size={17} /></button></span>
+          <div className="profile-actions">
+            <button className="signout-button" onClick={() => { setModal("household"); setMobileMenu(false); }} aria-label="Household settings" title="Household settings"><Settings2 size={17} /></button>
+            <form action={signOutPath} method="post"><button className="signout-button" type="submit" aria-label="Sign out" title="Sign out"><LogOut size={17} /></button></form>
+          </div>
         </div>
       </aside>
 
@@ -593,7 +592,7 @@ export default function LifetimeFinanceHub({ viewer }: { viewer: Viewer }) {
               setPeriod={setActivityPeriod}
               onSavePlan={saveSpendingPlan}
               onExport={exportData}
-              onReset={resetSample}
+              onReset={clearWorkspace}
               scope={scope}
             />
           )}
@@ -911,7 +910,7 @@ function MoneyView({ section, setSection, accounts, allAccounts, transactions, m
             <SpendingPlanList plans={plans} transactions={monthTransactions} compact onSave={onSavePlan} scope={scope} />
           </section>
         </div>
-        <section className="data-controls"><div><p className="eyebrow">Your data</p><strong>Start clean or keep a private backup.</strong><span>Sample data is only a first-run tour. Clearing it preserves your profile and household setup.</span></div><div><button className="secondary-button" onClick={onExport}><Download size={16} /> Download backup</button><button className="secondary-button danger-button" onClick={onReset}><Trash2 size={16} /> Clear sample data</button></div></section>
+        <section className="data-controls"><div><p className="eyebrow">Your data</p><strong>Keep a private backup or start over.</strong><span>Clearing removes the financial workspace while preserving your profile and household setup.</span></div><div><button className="secondary-button" onClick={onExport}><Download size={16} /> Download backup</button><button className="secondary-button danger-button" onClick={onReset}><Trash2 size={16} /> Clear workspace</button></div></section>
       </>}
 
       {section === "activity" && <ActivityView transactions={transactions} accounts={allAccounts} search={search} setSearch={setSearch} onAdd={onAdd} onImport={onImport} onDelete={onDelete} onEdit={onEditTransaction} selectedMonthLabel={selectedMonthLabel} selectedMonth={selectedMonth} setSelectedMonth={setSelectedMonth} shiftMonth={shiftMonth} mode={mode} setMode={setMode} filter={filter} setFilter={setFilter} period={period} setPeriod={setPeriod} />}
