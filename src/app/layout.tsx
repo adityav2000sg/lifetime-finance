@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import InteractionMotion from "@/components/InteractionMotion";
 import "./globals.css";
 
 const siteTitle = "Lifetime — Finance for the life you’re building";
@@ -40,7 +41,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en-SG">
-      <body>{children}</body>
+      <body><InteractionMotion />{children}</body>
     </html>
   );
 }

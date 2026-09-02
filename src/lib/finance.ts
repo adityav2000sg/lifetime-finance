@@ -166,6 +166,25 @@ export function createEmptyFinanceData({ name, householdName }: { name: string; 
   };
 }
 
+export function isFinanceData(input: unknown): input is FinanceData {
+  if (!input || typeof input !== "object") return false;
+  const candidate = input as Partial<FinanceData>;
+  const record = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object");
+  const text = (value: unknown) => typeof value === "string";
+  const amount = (value: unknown) => typeof value === "number" && Number.isFinite(value);
+  const space = (value: unknown) => value === "personal" || value === "household";
+  const profile = candidate.profile;
+  if (candidate.version !== 3 || !record(profile) || !text(profile.name) || !text(profile.partnerName) || !text(profile.householdName)) return false;
+  if (!Array.isArray(candidate.accounts) || !candidate.accounts.every((item) => record(item) && text(item.id) && text(item.name) && text(item.institution) && text(item.type) && space(item.space) && text(item.owner) && amount(item.balance) && item.currency === "SGD")) return false;
+  if (!Array.isArray(candidate.transactions) || !candidate.transactions.every((item) => record(item) && text(item.id) && ["expense", "income", "transfer"].includes(String(item.type)) && amount(item.amount) && item.amount > 0 && text(item.date) && text(item.description) && text(item.category) && text(item.accountId) && space(item.space) && text(item.source))) return false;
+  if (!Array.isArray(candidate.goals) || !candidate.goals.every((item) => record(item) && text(item.id) && text(item.name) && amount(item.target) && amount(item.current) && text(item.targetDate) && space(item.space) && text(item.icon))) return false;
+  if (!Array.isArray(candidate.recurring) || !candidate.recurring.every((item) => record(item) && text(item.id) && text(item.name) && amount(item.amount) && ["monthly", "quarterly", "yearly"].includes(String(item.cadence)) && text(item.nextDate) && text(item.accountId) && text(item.category) && space(item.space) && typeof item.active === "boolean")) return false;
+  if (!Array.isArray(candidate.spendingPlans) || !candidate.spendingPlans.every((item) => record(item) && text(item.id) && text(item.category) && amount(item.monthlyLimit) && space(item.space))) return false;
+  if (!Array.isArray(candidate.plannedEvents) || !candidate.plannedEvents.every((item) => record(item) && text(item.id) && text(item.name) && amount(item.amount) && text(item.date) && text(item.kind) && space(item.space) && typeof item.includeInPlan === "boolean")) return false;
+  if (!Array.isArray(candidate.inbox) || !candidate.inbox.every((item) => record(item) && text(item.id) && text(item.description) && amount(item.amount) && text(item.date) && text(item.source) && ["expense", "income", "transfer"].includes(String(item.suggestedType)) && text(item.suggestedCategory) && space(item.space) && amount(item.confidence) && text(item.status) && text(item.reason))) return false;
+  return true;
+}
+
 export function normalizeFinanceData(input: Partial<FinanceData>, fallback: FinanceData): FinanceData {
   return {
     ...fallback,

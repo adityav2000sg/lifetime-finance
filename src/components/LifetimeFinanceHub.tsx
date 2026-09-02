@@ -53,6 +53,7 @@ import {
   FinanceData,
   FinanceForecast,
   Goal,
+  InboxItem,
   PlannedEvent,
   RecurringItem,
   SpaceId,
@@ -68,6 +69,7 @@ import {
   formatDate,
   formatMoney,
   inScope,
+  isFinanceData,
   monthKey,
   monthlyEquivalent,
   normalizeFinanceData,
@@ -76,7 +78,7 @@ import {
 import { ImportReport, describeImport, importTransactions } from "@/lib/import";
 
 type ViewId = "today" | "money" | "future" | "coach" | "household";
-type MoneySection = "snapshot" | "activity" | "accounts" | "plan";
+type MoneySection = "snapshot" | "activity" | "accounts" | "inbox" | "plan";
 type ModalId = "capture" | "transaction" | "account" | "goal" | "event" | "recurring" | "import" | "household" | null;
 type ActivityMode = "feed" | "ledger";
 type ActivityFilter = "all" | TransactionType;
@@ -108,6 +110,13 @@ type Viewer = {
   email: string;
 };
 
+type Confirmation = {
+  title: string;
+  copy: string;
+  actionLabel: string;
+  onConfirm: () => void;
+};
+
 function createViewerSeed(viewer: Viewer) {
   const emailName = viewer.email.split("@")[0];
   const displayName = viewer.displayName === viewer.email ? emailName : viewer.displayName;
@@ -133,6 +142,11 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [captureDraft, setCaptureDraft] = useState<Partial<Transaction> | null>(null);
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
+  const [editingGoal, setEditingGoal] = useState<Goal | null>(null);
+  const [editingEvent, setEditingEvent] = useState<PlannedEvent | null>(null);
+  const [editingRecurring, setEditingRecurring] = useState<RecurringItem | null>(null);
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const [afterAccount, setAfterAccount] = useState<"transaction" | "import" | "recurring" | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [syncStatus, setSyncStatus] = useState<"loading" | "saving" | "saved" | "offline">("loading");
   const [householdMembers, setHouseholdMembers] = useState<Array<{ email: string; display_name: string; role: string; status: string }>>([]);
@@ -215,6 +229,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
   const scopedRecurring = useMemo(() => inScope(data.recurring, scope), [data.recurring, scope]);
   const scopedPlans = useMemo(() => inScope(data.spendingPlans, scope), [data.spendingPlans, scope]);
   const scopedEvents = useMemo(() => inScope(data.plannedEvents, scope), [data.plannedEvents, scope]);
+  const scopedInbox = useMemo(() => inScope(data.inbox, scope), [data.inbox, scope]);
   const forecast = useMemo(() => buildForecast(data, scope), [data, scope]);
   const monthTransactions = useMemo(
     () => scopedTransactions.filter((transaction) => monthKey(transaction.date) === selectedMonth),
@@ -264,6 +279,8 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
   function openNewTransaction(type?: TransactionType) {
     if (!data.accounts.length) {
       setEditingAccount(null);
+      setCaptureDraft(type ? { type } : null);
+      setAfterAccount("transaction");
       setModal("account");
       notify("Add an account before recording transactions.");
       return;
@@ -276,8 +293,11 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
 
   function openCaptureDraft(draft: Partial<Transaction>) {
     if (!data.accounts.length) {
+      setCaptureDraft(draft);
+      setEditingAccount(null);
+      setAfterAccount("transaction");
       setModal("account");
-      notify("Add an account before recording transactions.");
+      notify("Add an account, then you can finish this transaction.");
       return;
     }
     setEditingTransaction(null);
@@ -313,23 +333,32 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
   }
 
   function deleteTransaction(transaction: Transaction) {
-    if (!window.confirm(`Delete “${transaction.description}”? Its account balance will be restored.`)) return;
-    setData((current) => ({
-      ...current,
-      accounts: applyTransaction(current.accounts, transaction, -1),
-      transactions: current.transactions.filter((item) => item.id !== transaction.id),
-    }));
-    setEditingTransaction(null);
-    notify("Transaction removed and balances restored.");
+    setConfirmation({
+      title: "Delete this transaction?",
+      copy: `“${transaction.description}” will be removed and its effect on the connected account balances will be reversed.`,
+      actionLabel: "Delete transaction",
+      onConfirm: () => {
+        setData((current) => ({
+          ...current,
+          accounts: applyTransaction(current.accounts, transaction, -1),
+          transactions: current.transactions.filter((item) => item.id !== transaction.id),
+        }));
+        setEditingTransaction(null);
+        setModal(null);
+        notify("Transaction removed and balances restored.");
+      },
+    });
   }
 
   function openNewAccount() {
     setEditingAccount(null);
+    setAfterAccount(null);
     setModal("account");
   }
 
   function openEditAccount(account: Account) {
     setEditingAccount(account);
+    setAfterAccount(null);
     setModal("account");
   }
 
@@ -340,9 +369,40 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
         ? current.accounts.map((item) => item.id === editingAccount.id ? account : item)
         : [...current.accounts, account],
     }));
-    setModal(null);
+    const nextStep = editingAccount ? null : afterAccount;
+    setModal(nextStep === "transaction" ? "transaction" : nextStep === "import" ? "import" : nextStep === "recurring" ? "recurring" : null);
     setEditingAccount(null);
-    notify(editingAccount ? "Account details updated." : "Account added to your workspace.");
+    setAfterAccount(null);
+    notify(editingAccount ? "Account details updated." : nextStep ? "Account added. Finish the next step when you’re ready." : "Account added to your workspace.");
+  }
+
+  function deleteAccount(account: Account) {
+    const relatedTransactions = data.transactions.filter((item) => item.accountId === account.id || item.transferAccountId === account.id);
+    const relatedRecurring = data.recurring.filter((item) => item.accountId === account.id);
+    const impact = [
+      relatedTransactions.length ? `${relatedTransactions.length} transaction${relatedTransactions.length === 1 ? "" : "s"}` : "",
+      relatedRecurring.length ? `${relatedRecurring.length} recurring payment${relatedRecurring.length === 1 ? "" : "s"}` : "",
+    ].filter(Boolean).join(" and ");
+    setConfirmation({
+      title: `Remove ${account.name}?`,
+      copy: impact ? `This also removes ${impact}. Transfers involving this account will be reversed on the remaining account before deletion.` : "This account will be removed from your balance sheet.",
+      actionLabel: "Remove account",
+      onConfirm: () => {
+        setData((current) => {
+          const attached = current.transactions.filter((item) => item.accountId === account.id || item.transferAccountId === account.id);
+          const restoredAccounts = attached.reduce((accounts, transaction) => applyTransaction(accounts, transaction, -1), current.accounts);
+          return {
+            ...current,
+            accounts: restoredAccounts.filter((item) => item.id !== account.id),
+            transactions: current.transactions.filter((item) => item.accountId !== account.id && item.transferAccountId !== account.id),
+            recurring: current.recurring.filter((item) => item.accountId !== account.id),
+          };
+        });
+        setEditingAccount(null);
+        setModal(null);
+        notify("Account and connected records removed safely.");
+      },
+    });
   }
 
   function saveHousehold(profile: FinanceData["profile"]) {
@@ -368,6 +428,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
   function openImport() {
     if (!data.accounts.length) {
       setEditingAccount(null);
+      setAfterAccount("import");
       setModal("account");
       notify("Add an account before importing transactions.");
       return;
@@ -375,23 +436,122 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
     setModal("import");
   }
 
-  function addGoal(goal: Goal) {
-    setData((current) => ({ ...current, goals: [...current.goals, goal] }));
+  function stageInbox(transactions: Transaction[]) {
+    const staged: InboxItem[] = transactions.map((transaction) => ({
+      id: uid("inbox"),
+      description: transaction.description,
+      amount: transaction.amount,
+      date: transaction.date,
+      source: transaction.source === "sheet" ? "sheet" : "bank",
+      suggestedType: transaction.type,
+      suggestedCategory: transaction.category,
+      suggestedAccountId: transaction.accountId,
+      space: transaction.space,
+      confidence: 0.9,
+      status: "review",
+      reason: "Imported row matched an account and is ready for your approval.",
+    }));
+    setData((current) => ({ ...current, inbox: [...staged, ...current.inbox] }));
     setModal(null);
-    notify("Goal created.");
+    setMoneySection("inbox");
+    setActiveView("money");
+    notify(`${staged.length} item${staged.length === 1 ? "" : "s"} added to the review inbox.`);
   }
 
-  function addRecurring(item: RecurringItem) {
-    setData((current) => ({ ...current, recurring: [...current.recurring, item] }));
-    setModal(null);
-    notify("Recurring payment added.");
+  function approveInbox(item: InboxItem) {
+    const account = data.accounts.find((candidate) => candidate.id === item.suggestedAccountId);
+    if (!account) { notify("Choose or add the matching account before approving this item."); return; }
+    const transaction: Transaction = {
+      id: uid("tx"), type: item.suggestedType, amount: item.amount, date: item.date, description: item.description,
+      category: item.suggestedCategory, accountId: account.id, space: account.space, source: item.source === "receipt" || item.source === "screenshot" ? "receipt" : item.source,
+    };
+    setData((current) => ({ ...current, accounts: applyTransaction(current.accounts, transaction), transactions: [transaction, ...current.transactions], inbox: current.inbox.filter((candidate) => candidate.id !== item.id) }));
+    notify("Inbox item approved and added to the ledger.");
   }
 
-  function addPlannedEvent(item: PlannedEvent) {
-    setData((current) => ({ ...current, plannedEvents: [...current.plannedEvents, item] }));
+  function dismissInbox(item: InboxItem) {
+    setData((current) => ({ ...current, inbox: current.inbox.filter((candidate) => candidate.id !== item.id) }));
+    notify("Inbox item dismissed.");
+  }
+
+  function openNewGoal() {
+    setEditingGoal(null);
+    setModal("goal");
+  }
+
+  function openEditGoal(goal: Goal) {
+    setEditingGoal(goal);
+    setModal("goal");
+  }
+
+  function saveGoal(goal: Goal) {
+    setData((current) => ({ ...current, goals: editingGoal ? current.goals.map((item) => item.id === goal.id ? goal : item) : [...current.goals, goal] }));
     setModal(null);
+    setEditingGoal(null);
+    notify(editingGoal ? "Goal updated." : "Goal created.");
+  }
+
+  function deleteGoal(goal: Goal) {
+    setConfirmation({ title: `Delete ${goal.name}?`, copy: "Its target, progress, and forecast will be removed. Your account balances are not affected.", actionLabel: "Delete goal", onConfirm: () => {
+      setData((current) => ({ ...current, goals: current.goals.filter((item) => item.id !== goal.id) }));
+      setEditingGoal(null); setModal(null); notify("Goal removed.");
+    } });
+  }
+
+  function openNewRecurring() {
+    if (!data.accounts.length) {
+      setEditingAccount(null);
+      setAfterAccount("recurring");
+      setModal("account");
+      notify("Add the account that will pay this recurring item first.");
+      return;
+    }
+    setEditingRecurring(null);
+    setModal("recurring");
+  }
+
+  function openEditRecurring(item: RecurringItem) {
+    setEditingRecurring(item);
+    setModal("recurring");
+  }
+
+  function saveRecurring(item: RecurringItem) {
+    setData((current) => ({ ...current, recurring: editingRecurring ? current.recurring.map((candidate) => candidate.id === item.id ? item : candidate) : [...current.recurring, item] }));
+    setModal(null);
+    setEditingRecurring(null);
+    notify(editingRecurring ? "Recurring payment updated." : "Recurring payment added.");
+  }
+
+  function deleteRecurring(item: RecurringItem) {
+    setConfirmation({ title: `Delete ${item.name}?`, copy: "This recurring payment will be removed from future monthly estimates. Existing transactions stay unchanged.", actionLabel: "Delete recurring payment", onConfirm: () => {
+      setData((current) => ({ ...current, recurring: current.recurring.filter((candidate) => candidate.id !== item.id) }));
+      setEditingRecurring(null); setModal(null); notify("Recurring payment removed.");
+    } });
+  }
+
+  function openNewEvent() {
+    setEditingEvent(null);
+    setModal("event");
+  }
+
+  function openEditEvent(item: PlannedEvent) {
+    setEditingEvent(item);
+    setModal("event");
+  }
+
+  function savePlannedEvent(item: PlannedEvent) {
+    setData((current) => ({ ...current, plannedEvents: editingEvent ? current.plannedEvents.map((candidate) => candidate.id === item.id ? item : candidate) : [...current.plannedEvents, item] }));
+    setModal(null);
+    setEditingEvent(null);
     setActiveView("future");
-    notify("Future plan added to your forecast.");
+    notify(editingEvent ? "Future plan updated." : "Future plan added to your forecast.");
+  }
+
+  function deletePlannedEvent(item: PlannedEvent) {
+    setConfirmation({ title: `Delete ${item.name}?`, copy: "The event cost will be removed from your forecast and goal-delay estimates.", actionLabel: "Delete event", onConfirm: () => {
+      setData((current) => ({ ...current, plannedEvents: current.plannedEvents.filter((candidate) => candidate.id !== item.id) }));
+      setEditingEvent(null); setModal(null); notify("Future plan removed.");
+    } });
   }
 
   function saveSpendingPlan(category: string, monthlyLimit: number, planScope: SpaceId) {
@@ -420,10 +580,18 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
   }
 
   function toggleRecurring(id: string) {
+    const item = data.recurring.find((candidate) => candidate.id === id);
     setData((current) => ({
       ...current,
       recurring: current.recurring.map((item) => item.id === id ? { ...item, active: !item.active } : item),
     }));
+    notify(item?.active ? "Recurring payment paused." : "Recurring payment resumed.");
+  }
+
+  function togglePlannedEvent(id: string) {
+    const item = data.plannedEvents.find((candidate) => candidate.id === id);
+    setData((current) => ({ ...current, plannedEvents: current.plannedEvents.map((event) => event.id === id ? { ...event, includeInPlan: !event.includeInPlan } : event) }));
+    notify(item?.includeInPlan ? "Event excluded from the forecast." : "Event included in the forecast.");
   }
 
   function exportData() {
@@ -437,13 +605,28 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
     notify("A private backup was downloaded.");
   }
 
-  function clearWorkspace() {
-    if (!window.confirm("Clear every account, transaction, goal, recurring payment, and plan? Your profile and household setup will stay in place.")) return;
-    setData((current) => ({ ...createViewerSeed(viewer), profile: current.profile, accounts: [], transactions: [], goals: [], recurring: [], spendingPlans: [], plannedEvents: [], inbox: [] }));
-    setScope("all");
-    setActiveView("today");
-    notify("Workspace cleared. Add your first account when you’re ready.");
+  async function restoreBackup(file: File) {
+    try {
+      if (file.size > 2_000_000) throw new Error("That backup is larger than the supported 2 MB workspace size.");
+      const parsed: unknown = JSON.parse(await file.text());
+      if (!isFinanceData(parsed)) throw new Error("That file is not a valid Lifetime backup.");
+      const restored = normalizeFinanceData(parsed, createViewerSeed(viewer));
+      setConfirmation({ title: "Restore this backup?", copy: `This will replace the current workspace with ${restored.accounts.length} accounts and ${restored.transactions.length} transactions from the selected file.`, actionLabel: "Restore backup", onConfirm: () => {
+        setData(restored); setScope("all"); setActiveView("today"); notify("Backup restored and queued for secure sync.");
+      } });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "That backup could not be opened.");
+    }
   }
+
+  function clearWorkspace() {
+    setConfirmation({ title: "Clear the whole workspace?", copy: "Every account, transaction, goal, recurring payment, plan, and inbox item will be removed. Your profile and household setup will remain.", actionLabel: "Clear workspace", onConfirm: () => {
+      setData((current) => ({ ...createViewerSeed(viewer), profile: current.profile, accounts: [], transactions: [], goals: [], recurring: [], spendingPlans: [], plannedEvents: [], inbox: [] }));
+      setScope("all"); setActiveView("today"); notify("Workspace cleared. Add your first account when you’re ready.");
+    } });
+  }
+
+  if (!hydrated) return <AppLoading displayName={viewer.displayName} />;
 
   return (
     <div className="app-shell">
@@ -492,6 +675,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
           </div>
         </div>
       </aside>
+      {mobileMenu && <button className="mobile-menu-scrim" onClick={() => setMobileMenu(false)} aria-label="Close navigation" />}
 
       <div className="app-main">
         <header className="topbar">
@@ -527,6 +711,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
         </header>
 
         <main className="content">
+          <div className="view-stage" key={`${activeView}-${activeView === "money" ? moneySection : "main"}`}>
           {activeView === "today" && (
             <Overview
               scope={scope}
@@ -557,6 +742,9 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
               data={data}
               forecast={forecast}
               onCapture={() => setModal("capture")}
+              onEditGoal={openEditGoal}
+              onAddAccount={openNewAccount}
+              onHousehold={() => setModal("household")}
             />
           )}
 
@@ -569,6 +757,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
               transactions={visibleTransactions}
               monthTransactions={monthTransactions}
               plans={scopedPlans}
+              inbox={scopedInbox}
               netWorth={netWorth}
               monthIncome={monthIncome}
               monthSpending={monthSpending}
@@ -576,6 +765,8 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
               setSearch={setSearch}
               onAdd={() => openNewTransaction()}
               onImport={openImport}
+              onApproveInbox={approveInbox}
+              onDismissInbox={dismissInbox}
               onDelete={deleteTransaction}
               onEditTransaction={openEditTransaction}
               onAddAccount={openNewAccount}
@@ -592,6 +783,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
               setPeriod={setActivityPeriod}
               onSavePlan={saveSpendingPlan}
               onExport={exportData}
+              onRestore={restoreBackup}
               onReset={clearWorkspace}
               scope={scope}
             />
@@ -605,16 +797,19 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
               accounts={data.accounts}
               forecast={forecast}
               recurringCost={activeRecurringCost}
-              onAddGoal={() => setModal("goal")}
-              onAddEvent={() => setModal("event")}
-              onAddRecurring={() => setModal("recurring")}
+              onAddGoal={openNewGoal}
+              onAddEvent={openNewEvent}
+              onAddRecurring={openNewRecurring}
               onToggleRecurring={toggleRecurring}
+              onEditGoal={openEditGoal}
+              onEditEvent={openEditEvent}
+              onEditRecurring={openEditRecurring}
               goalContribution={goalContribution}
               setGoalContribution={setGoalContribution}
               contributionAmount={contributionAmount}
               setContributionAmount={setContributionAmount}
               fundGoal={fundGoal}
-              onToggleEvent={(id) => setData((current) => ({ ...current, plannedEvents: current.plannedEvents.map((item) => item.id === id ? { ...item, includeInPlan: !item.includeInPlan } : item) }))}
+              onToggleEvent={togglePlannedEvent}
             />
           )}
 
@@ -625,6 +820,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
           {activeView === "household" && (
             <HouseholdView data={data} accounts={scopedAccounts} members={householdMembers} viewerEmail={viewer.email} onSetup={() => setModal("household")} onEditAccount={openEditAccount} />
           )}
+          </div>
         </main>
       </div>
 
@@ -641,17 +837,44 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
 
       <button className="mobile-fab voice-fab" onClick={() => setModal("capture")} aria-label="Capture with voice or text"><Mic size={24} /></button>
 
-      {modal === "capture" && <CaptureModal accounts={data.accounts} profile={data.profile} scope={scope} qwenConfigured={qwenConfigured} onClose={() => setModal(null)} onTransaction={(draft) => openCaptureDraft(draft)} onPlan={(event) => addPlannedEvent(event)} onAsk={(prompt) => { setModal(null); setActiveView("coach"); window.setTimeout(() => window.dispatchEvent(new CustomEvent("lifetime-coach-question", { detail: prompt })), 100); }} onProfile={(profile) => setData((current) => ({ ...current, profile }))} />}
+      {modal === "capture" && <CaptureModal accounts={data.accounts} profile={data.profile} scope={scope} qwenConfigured={qwenConfigured} onClose={() => setModal(null)} onTransaction={(draft) => openCaptureDraft(draft)} onPlan={(event) => savePlannedEvent(event)} onAsk={(prompt) => { setModal(null); setActiveView("coach"); window.setTimeout(() => window.dispatchEvent(new CustomEvent("lifetime-coach-question", { detail: prompt })), 100); }} onProfile={(profile) => setData((current) => ({ ...current, profile }))} />}
       {modal === "transaction" && <TransactionModal initial={editingTransaction || captureDraft} accounts={data.accounts} scope={scope} onClose={() => { setModal(null); setEditingTransaction(null); setCaptureDraft(null); }} onSubmit={saveTransaction} />}
-      {modal === "account" && <AccountModal initial={editingAccount} scope={scope} profileName={data.profile.name} partnerName={data.profile.partnerName} onClose={() => { setModal(null); setEditingAccount(null); }} onSubmit={saveAccount} />}
-      {modal === "goal" && <GoalModal scope={scope} onClose={() => setModal(null)} onSubmit={addGoal} />}
-      {modal === "event" && <PlannedEventModal scope={scope} onClose={() => setModal(null)} onSubmit={addPlannedEvent} />}
-      {modal === "recurring" && <RecurringModal scope={scope} accounts={data.accounts} onClose={() => setModal(null)} onSubmit={addRecurring} />}
-      {modal === "import" && <ImportModal data={data} scope={scope} onClose={() => setModal(null)} setData={setData} notify={notify} />}
+      {modal === "account" && <AccountModal initial={editingAccount} scope={scope} profileName={data.profile.name} partnerName={data.profile.partnerName} onClose={() => { setModal(null); setEditingAccount(null); setAfterAccount(null); setCaptureDraft(null); }} onSubmit={saveAccount} onDelete={editingAccount ? () => deleteAccount(editingAccount) : undefined} />}
+      {modal === "goal" && <GoalModal initial={editingGoal} scope={scope} onClose={() => { setModal(null); setEditingGoal(null); }} onSubmit={saveGoal} onDelete={editingGoal ? () => deleteGoal(editingGoal) : undefined} />}
+      {modal === "event" && <PlannedEventModal initial={editingEvent} scope={scope} onClose={() => { setModal(null); setEditingEvent(null); }} onSubmit={savePlannedEvent} onDelete={editingEvent ? () => deletePlannedEvent(editingEvent) : undefined} />}
+      {modal === "recurring" && <RecurringModal initial={editingRecurring} scope={scope} accounts={data.accounts} onClose={() => { setModal(null); setEditingRecurring(null); }} onSubmit={saveRecurring} onDelete={editingRecurring ? () => deleteRecurring(editingRecurring) : undefined} />}
+      {modal === "import" && <ImportModal data={data} scope={scope} onClose={() => setModal(null)} setData={setData} onStage={stageInbox} notify={notify} />}
       {modal === "household" && <HouseholdModal profile={data.profile} viewerEmail={viewer.email} onClose={() => setModal(null)} onSubmit={saveHousehold} />}
+
+      {confirmation && <ConfirmationModal confirmation={confirmation} onClose={() => setConfirmation(null)} onConfirm={() => { const action = confirmation.onConfirm; setConfirmation(null); action(); }} />}
 
       {toast && <div className="toast"><Check size={17} />{toast}</div>}
     </div>
+  );
+}
+
+function AppLoading({ displayName }: { displayName: string }) {
+  return (
+    <main className="app-loading" aria-live="polite" aria-busy="true">
+      <div className="loading-mark"><Leaf size={27} /><i /><i /></div>
+      <p className="eyebrow">Lifetime</p>
+      <strong>Opening {displayName.split(/\s+/)[0] || "your"}’s private workspace</strong>
+      <span>Syncing personal and household finances…</span>
+    </main>
+  );
+}
+
+function FirstRunGuide({ onAddAccount, onHousehold, onCapture }: { onAddAccount: () => void; onHousehold: () => void; onCapture: () => void }) {
+  const steps = [
+    { number: "01", title: "Add where money lives", copy: "Start with one bank account, card, cash balance, investment, CPF account, or loan.", action: "Add first account", icon: <WalletCards size={19} />, onClick: onAddAccount },
+    { number: "02", title: "Choose what is shared", copy: "Set up a partner or household without exposing either person’s private accounts.", action: "Set up household", icon: <Users size={19} />, onClick: onHousehold },
+    { number: "03", title: "Capture naturally", copy: "Speak or type a transaction, then review it before it changes any balance.", action: "Try capture", icon: <Mic size={19} />, onClick: onCapture },
+  ];
+  return (
+    <section className="first-run-guide">
+      <div className="first-run-heading"><div><p className="eyebrow">Start your foundation</p><h2>Three quiet steps to a useful financial picture.</h2></div><span>Nothing is pre-filled</span></div>
+      <div className="first-run-steps">{steps.map((step) => <button key={step.number} onClick={step.onClick}><span className="first-run-number">{step.number}</span><i>{step.icon}</i><strong>{step.title}</strong><p>{step.copy}</p><small>{step.action}<ChevronRight size={15} /></small></button>)}</div>
+    </section>
   );
 }
 
@@ -684,6 +907,9 @@ function Overview({
   data,
   forecast,
   onCapture,
+  onEditGoal,
+  onAddAccount,
+  onHousehold,
 }: {
   scope: ViewScope;
   scopeLabel: string;
@@ -713,6 +939,9 @@ function Overview({
   data: FinanceData;
   forecast: FinanceForecast;
   onCapture: () => void;
+  onEditGoal: (goal: Goal) => void;
+  onAddAccount: () => void;
+  onHousehold: () => void;
 }) {
   const today = new Date();
   const firstName = profileName.split(" ")[0];
@@ -742,6 +971,8 @@ function Overview({
           <button className="hero-secondary" onClick={() => onView("money")}>Explore your money <ChevronRight size={17} /></button>
         </div>
       </section>
+
+      {!accounts.length && <FirstRunGuide onAddAccount={onAddAccount} onHousehold={onHousehold} onCapture={onCapture} />}
 
       <section className="coach-glance">
         <div className="coach-glance-icon"><WandSparkles size={21} /></div>
@@ -816,6 +1047,7 @@ function Overview({
               contributionAmount={contributionAmount}
               setContributionAmount={setContributionAmount}
               fundGoal={() => fundGoal(goal.id)}
+              onEdit={() => onEditGoal(goal)}
             />
           ) : <EmptyState icon={<Target />} title="A future worth funding" copy="Set a shared or personal goal." />}
         </section>
@@ -837,7 +1069,7 @@ function Overview({
   );
 }
 
-function MoneyView({ section, setSection, accounts, allAccounts, transactions, monthTransactions, plans, netWorth, monthIncome, monthSpending, search, setSearch, onAdd, onImport, onDelete, onEditTransaction, onAddAccount, onEditAccount, selectedMonthLabel, selectedMonth, setSelectedMonth, shiftMonth, mode, setMode, filter, setFilter, period, setPeriod, onSavePlan, onExport, onReset, scope }: {
+function MoneyView({ section, setSection, accounts, allAccounts, transactions, monthTransactions, plans, inbox, netWorth, monthIncome, monthSpending, search, setSearch, onAdd, onImport, onApproveInbox, onDismissInbox, onDelete, onEditTransaction, onAddAccount, onEditAccount, selectedMonthLabel, selectedMonth, setSelectedMonth, shiftMonth, mode, setMode, filter, setFilter, period, setPeriod, onSavePlan, onExport, onRestore, onReset, scope }: {
   section: MoneySection;
   setSection: (section: MoneySection) => void;
   accounts: Account[];
@@ -845,6 +1077,7 @@ function MoneyView({ section, setSection, accounts, allAccounts, transactions, m
   transactions: Transaction[];
   monthTransactions: Transaction[];
   plans: FinanceData["spendingPlans"];
+  inbox: InboxItem[];
   netWorth: number;
   monthIncome: number;
   monthSpending: number;
@@ -852,6 +1085,8 @@ function MoneyView({ section, setSection, accounts, allAccounts, transactions, m
   setSearch: (value: string) => void;
   onAdd: () => void;
   onImport: () => void;
+  onApproveInbox: (item: InboxItem) => void;
+  onDismissInbox: (item: InboxItem) => void;
   onDelete: (transaction: Transaction) => void;
   onEditTransaction: (transaction: Transaction) => void;
   onAddAccount: () => void;
@@ -868,6 +1103,7 @@ function MoneyView({ section, setSection, accounts, allAccounts, transactions, m
   setPeriod: (period: ActivityPeriod) => void;
   onSavePlan: (category: string, amount: number, scope: SpaceId) => void;
   onExport: () => void;
+  onRestore: (file: File) => void;
   onReset: () => void;
   scope: ViewScope;
 }) {
@@ -875,6 +1111,7 @@ function MoneyView({ section, setSection, accounts, allAccounts, transactions, m
     { id: "snapshot", label: "Snapshot", icon: Gauge },
     { id: "activity", label: "Activity", icon: ArrowLeftRight },
     { id: "accounts", label: "Accounts", icon: WalletCards },
+    { id: "inbox", label: "Review", icon: Layers3, count: inbox.length },
     { id: "plan", label: "Spending plan", icon: PiggyBank },
   ];
   const assets = accounts.filter((account) => account.balance >= 0);
@@ -910,12 +1147,40 @@ function MoneyView({ section, setSection, accounts, allAccounts, transactions, m
             <SpendingPlanList plans={plans} transactions={monthTransactions} compact onSave={onSavePlan} scope={scope} />
           </section>
         </div>
-        <section className="data-controls"><div><p className="eyebrow">Your data</p><strong>Keep a private backup or start over.</strong><span>Clearing removes the financial workspace while preserving your profile and household setup.</span></div><div><button className="secondary-button" onClick={onExport}><Download size={16} /> Download backup</button><button className="secondary-button danger-button" onClick={onReset}><Trash2 size={16} /> Clear workspace</button></div></section>
+        <section className="data-controls"><div><p className="eyebrow">Your data</p><strong>Back up, restore, or start over.</strong><span>Restore replaces this workspace from a Lifetime JSON backup. Clearing preserves your profile and household setup.</span></div><div><button className="secondary-button" onClick={onExport}><Download size={16} /> Download backup</button><label className="secondary-button file-button"><Upload size={16} /> Restore backup<input className="file-input" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) onRestore(file); event.target.value = ""; }} /></label><button className="secondary-button danger-button" onClick={onReset}><Trash2 size={16} /> Clear workspace</button></div></section>
       </>}
 
       {section === "activity" && <ActivityView transactions={transactions} accounts={allAccounts} search={search} setSearch={setSearch} onAdd={onAdd} onImport={onImport} onDelete={onDelete} onEdit={onEditTransaction} selectedMonthLabel={selectedMonthLabel} selectedMonth={selectedMonth} setSelectedMonth={setSelectedMonth} shiftMonth={shiftMonth} mode={mode} setMode={setMode} filter={filter} setFilter={setFilter} period={period} setPeriod={setPeriod} />}
       {section === "accounts" && <AccountsView accounts={accounts} netWorth={netWorth} onAdd={onAddAccount} onEdit={onEditAccount} />}
+      {section === "inbox" && <InboxView inbox={inbox} accounts={allAccounts} onImport={onImport} onApprove={onApproveInbox} onDismiss={onDismissInbox} />}
       {section === "plan" && <section className="panel plan-editor-panel"><PanelHeading eyebrow="A plan, not a punishment" title="Monthly spending boundaries" /><SpendingPlanList plans={plans} transactions={monthTransactions} onSave={onSavePlan} scope={scope} /></section>}
+    </div>
+  );
+}
+
+function InboxView({ inbox, accounts, onImport, onApprove, onDismiss }: { inbox: InboxItem[]; accounts: Account[]; onImport: () => void; onApprove: (item: InboxItem) => void; onDismiss: (item: InboxItem) => void }) {
+  return (
+    <div className="page-stack">
+      <PageHeading eyebrow="Human in the loop" title="Review inbox" copy="Imported money waits here until you approve it. Nothing changes a balance silently.">
+        <button className="primary-button" onClick={onImport}><Upload size={17} /> Bring in transactions</button>
+      </PageHeading>
+      <section className="panel inbox-panel">
+        <div className="inbox-intro"><span className="inbox-source"><ShieldCheck size={20} /></span><div><strong>{inbox.length ? `${inbox.length} item${inbox.length === 1 ? "" : "s"} waiting for you` : "Your review inbox is clear"}</strong><p>Approve adds the item to the ledger and updates its account balance. Dismiss removes it without touching your finances.</p></div></div>
+        <div className="inbox-list">
+          {inbox.map((item) => {
+            const account = accounts.find((candidate) => candidate.id === item.suggestedAccountId);
+            return (
+              <div className="inbox-row" key={item.id}>
+                <span className="inbox-source">{item.source === "sheet" ? <FileSpreadsheet size={19} /> : <Upload size={19} />}</span>
+                <span className="inbox-copy"><strong>{item.description}</strong><small>{formatDate(item.date, true)} · {account?.name || "Account unavailable"}</small><span>{item.suggestedType} · {item.suggestedCategory} · {Math.round(item.confidence * 100)}% match</span></span>
+                <strong>{item.suggestedType === "income" ? "+" : item.suggestedType === "expense" ? "−" : ""}{formatMoney(item.amount)}</strong>
+                <span className="inbox-actions"><button className="secondary-button" onClick={() => onDismiss(item)}><X size={15} /> Dismiss</button><button className="primary-button" onClick={() => onApprove(item)} disabled={!account}><Check size={15} /> Approve</button></span>
+              </div>
+            );
+          })}
+          {!inbox.length && <EmptyState icon={<Layers3 />} title="Nothing needs review" copy="Import a CSV or paste rows from Google Sheets, then choose Review first." />}
+        </div>
+      </section>
     </div>
   );
 }
@@ -966,15 +1231,15 @@ function SpendingPlanRow({ plan, spent, onSave }: { plan: FinanceData["spendingP
   return <div className="plan-row"><div className="plan-row-top"><span><i style={{ background: categoryColors[plan.category] || categoryColors.Other }} />{plan.category}<small>{formatMoney(spent)} spent</small></span>{editing ? <span className="inline-plan-edit"><input autoFocus type="number" min="0" value={amount} onChange={(event) => setAmount(event.target.value)} aria-label={`${plan.category} monthly plan`} /><button onClick={() => { onSave(plan.category, Number(amount) || 0, plan.space); setEditing(false); }}><Check size={15} /></button></span> : <button onClick={() => setEditing(true)}>{formatMoney(plan.monthlyLimit)} <Edit3 size={14} /></button>}</div><div className="plan-progress"><i className={ratio > 1 ? "over-plan" : ""} style={{ width: `${Math.min(100, ratio * 100)}%`, background: categoryColors[plan.category] || categoryColors.Other }} /></div><small>{ratio > 1 ? `${formatMoney(spent - plan.monthlyLimit)} over` : `${formatMoney(Math.max(0, plan.monthlyLimit - spent))} left`}</small></div>;
 }
 
-function FutureView({ goals, recurring, events, accounts, forecast, recurringCost, onAddGoal, onAddEvent, onAddRecurring, onToggleRecurring, goalContribution, setGoalContribution, contributionAmount, setContributionAmount, fundGoal, onToggleEvent }: {
-  goals: Goal[]; recurring: RecurringItem[]; events: PlannedEvent[]; accounts: Account[]; forecast: FinanceForecast; recurringCost: number; onAddGoal: () => void; onAddEvent: () => void; onAddRecurring: () => void; onToggleRecurring: (id: string) => void; goalContribution: string | null; setGoalContribution: (id: string | null) => void; contributionAmount: string; setContributionAmount: (value: string) => void; fundGoal: (id: string) => void; onToggleEvent: (id: string) => void;
+function FutureView({ goals, recurring, events, accounts, forecast, recurringCost, onAddGoal, onAddEvent, onAddRecurring, onToggleRecurring, onEditGoal, onEditEvent, onEditRecurring, goalContribution, setGoalContribution, contributionAmount, setContributionAmount, fundGoal, onToggleEvent }: {
+  goals: Goal[]; recurring: RecurringItem[]; events: PlannedEvent[]; accounts: Account[]; forecast: FinanceForecast; recurringCost: number; onAddGoal: () => void; onAddEvent: () => void; onAddRecurring: () => void; onToggleRecurring: (id: string) => void; onEditGoal: (goal: Goal) => void; onEditEvent: (event: PlannedEvent) => void; onEditRecurring: (item: RecurringItem) => void; goalContribution: string | null; setGoalContribution: (id: string | null) => void; contributionAmount: string; setContributionAmount: (value: string) => void; fundGoal: (id: string) => void; onToggleEvent: (id: string) => void;
 }) {
   const plannedTotal = events.filter((item) => item.includeInPlan).reduce((sum, item) => sum + item.amount, 0);
   return <div className="page-stack"><PageHeading eyebrow="From today to someday" title="Future" copy="Goals, life plans and scenarios share one model, so every choice reveals its trade-off."><button className="secondary-button" onClick={onAddEvent}><CalendarDays size={17} /> Plan an event</button><button className="primary-button" onClick={onAddGoal}><Target size={17} /> New goal</button></PageHeading>
     <section className="future-hero"><div><p className="eyebrow hero-eyebrow">Forecast runway</p><h2>{formatMoney(Math.abs(forecast.monthlySurplus))} monthly {forecast.monthlySurplus < 0 ? "deficit" : "surplus"}</h2><p>Based on {forecast.historyMonths} month{forecast.historyMonths === 1 ? "" : "s"} of activity · {forecast.confidence} confidence</p></div><div className="future-stat"><span>Safe to spend</span><strong>{formatMoney(forecast.safeToSpend)}</strong><small>after goal contributions</small></div><div className="future-stat"><span>Emergency cover</span><strong>{forecast.emergencyMonths.toFixed(1)} months</strong><small>{formatMoney(forecast.liquidBalance)} liquid</small></div></section>
-    <section className="goal-runway-grid">{goals.map((goal) => { const model = forecast.goalForecasts.find((item) => item.goalId === goal.id); return <div className="runway-card" key={goal.id}><div className="runway-top"><span className={`goal-symbol goal-${goal.icon}`}><Target size={18} /></span><span className={model?.onTrack ? "status-on-track" : "status-watch"}>{model?.onTrack ? "On track" : "Needs attention"}</span></div><h3>{goal.name}</h3><strong>{model?.estimatedDate ? new Date(`${model.estimatedDate}T12:00:00`).toLocaleDateString("en-SG", { month: "long", year: "numeric" }) : "No forecast yet"}</strong><p>{model?.plannedEventDelayMonths ? `Planned events add about ${model.plannedEventDelayMonths} months.` : "No planned event delay modelled."}</p><div className="goal-progress"><i style={{ width: `${Math.min(100, (goal.current / goal.target) * 100)}%` }} /></div><small>{formatMoney(goal.current)} of {formatMoney(goal.target)}</small></div>; })}{!goals.length && <EmptyState icon={<Target />} title="Give the future a number" copy="Create a goal and Lifetime will estimate when you can reach it." />}</section>
-    <div className="dashboard-grid"><section className="panel scenario-panel"><PanelHeading eyebrow="Scenario lab" title="What your plans change" action="Add event" onAction={onAddEvent} /><div className="scenario-summary"><span>Included life plans</span><strong>{formatMoney(plannedTotal)}</strong><small>Turn an event off to compare the forecast without it.</small></div><div className="event-list">{events.map((event) => <button className={event.includeInPlan ? "event-row" : "event-row event-muted"} key={event.id} onClick={() => onToggleEvent(event.id)}><span className="event-date"><strong>{new Date(`${event.date}T12:00:00`).toLocaleDateString("en-SG", { month: "short" })}</strong><small>{new Date(`${event.date}T12:00:00`).getFullYear()}</small></span><span><strong>{event.name}</strong><small>{event.kind} · {event.includeInPlan ? "included" : "not modelled"}</small></span><strong>{formatMoney(event.amount)}</strong><span className={event.includeInPlan ? "tiny-toggle tiny-toggle-on" : "tiny-toggle"}><i /></span></button>)}</div></section><section className="panel forecast-explain"><span className="coach-glance-icon"><WandSparkles size={21} /></span><p className="eyebrow">Scenario signal</p><h3>{plannedTotal ? `${formatMoney(plannedTotal)} of plans are competing with your goals.` : "No planned events are competing with your goals."}</h3><p>{forecast.goalForecasts.some((item) => item.plannedEventDelayMonths > 0) ? `The largest modelled delay is ${Math.max(...forecast.goalForecasts.map((item) => item.plannedEventDelayMonths))} months. Lifetime recalculates this when spending or contributions change.` : "Your forecast currently has no event-driven delays."}</p><small>Forecasts are estimates, not guarantees. Evidence: transaction averages, current balances, goal contributions and included events.</small></section></div>
-    <PlansView goals={goals} recurring={recurring} accounts={accounts} recurringCost={recurringCost} onAddGoal={onAddGoal} onAddRecurring={onAddRecurring} onToggleRecurring={onToggleRecurring} goalContribution={goalContribution} setGoalContribution={setGoalContribution} contributionAmount={contributionAmount} setContributionAmount={setContributionAmount} fundGoal={fundGoal} />
+    <section className="goal-runway-grid">{goals.map((goal) => { const model = forecast.goalForecasts.find((item) => item.goalId === goal.id); return <button className="runway-card" key={goal.id} onClick={() => onEditGoal(goal)}><div className="runway-top"><span className={`goal-symbol goal-${goal.icon}`}><Target size={18} /></span><span className={model?.onTrack ? "status-on-track" : "status-watch"}>{model?.onTrack ? "On track" : "Needs attention"}</span></div><h3>{goal.name}</h3><strong>{model?.estimatedDate ? new Date(`${model.estimatedDate}T12:00:00`).toLocaleDateString("en-SG", { month: "long", year: "numeric" }) : "No forecast yet"}</strong><p>{model?.plannedEventDelayMonths ? `Planned events add about ${model.plannedEventDelayMonths} months.` : "No planned event delay modelled."}</p><div className="goal-progress"><i style={{ width: `${Math.min(100, (goal.current / goal.target) * 100)}%` }} /></div><small>{formatMoney(goal.current)} of {formatMoney(goal.target)} · tap to edit</small></button>; })}{!goals.length && <EmptyState icon={<Target />} title="Give the future a number" copy="Create a goal and Lifetime will estimate when you can reach it." />}</section>
+    <div className="dashboard-grid"><section className="panel scenario-panel"><PanelHeading eyebrow="Scenario lab" title="What your plans change" action="Add event" onAction={onAddEvent} /><div className="scenario-summary"><span>Included life plans</span><strong>{formatMoney(plannedTotal)}</strong><small>Turn an event off to compare the forecast without it.</small></div><div className="event-list">{events.map((event) => <div className={event.includeInPlan ? "event-row" : "event-row event-muted"} key={event.id}><span className="event-date"><strong>{new Date(`${event.date}T12:00:00`).toLocaleDateString("en-SG", { month: "short" })}</strong><small>{new Date(`${event.date}T12:00:00`).getFullYear()}</small></span><button className="event-copy" onClick={() => onEditEvent(event)}><strong>{event.name}</strong><small>{event.kind} · tap to edit</small></button><strong>{formatMoney(event.amount)}</strong><button className={event.includeInPlan ? "tiny-toggle tiny-toggle-on" : "tiny-toggle"} onClick={() => onToggleEvent(event.id)} aria-label={`${event.includeInPlan ? "Exclude" : "Include"} ${event.name} in forecast`}><i /></button></div>)}{!events.length && <EmptyState icon={<CalendarDays />} title="No life plans yet" copy="Add a trip, move, car, education, or family event to model the trade-off." />}</div></section><section className="panel forecast-explain"><span className="coach-glance-icon"><WandSparkles size={21} /></span><p className="eyebrow">Scenario signal</p><h3>{plannedTotal ? `${formatMoney(plannedTotal)} of plans are competing with your goals.` : "No planned events are competing with your goals."}</h3><p>{forecast.goalForecasts.some((item) => item.plannedEventDelayMonths > 0) ? `The largest modelled delay is ${Math.max(...forecast.goalForecasts.map((item) => item.plannedEventDelayMonths))} months. Lifetime recalculates this when spending or contributions change.` : "Your forecast currently has no event-driven delays."}</p><small>Forecasts are estimates, not guarantees. Evidence: transaction averages, current balances, goal contributions and included events.</small></section></div>
+    <PlansView goals={goals} recurring={recurring} accounts={accounts} recurringCost={recurringCost} onAddGoal={onAddGoal} onAddRecurring={onAddRecurring} onToggleRecurring={onToggleRecurring} onEditGoal={onEditGoal} onEditRecurring={onEditRecurring} goalContribution={goalContribution} setGoalContribution={setGoalContribution} contributionAmount={contributionAmount} setContributionAmount={setContributionAmount} fundGoal={fundGoal} />
   </div>;
 }
 
@@ -1160,7 +1425,7 @@ function AccountsView({ accounts, netWorth, onAdd, onEdit }: { accounts: Account
   );
 }
 
-function PlansView({ goals, recurring, accounts, recurringCost, onAddGoal, onAddRecurring, onToggleRecurring, goalContribution, setGoalContribution, contributionAmount, setContributionAmount, fundGoal }: {
+function PlansView({ goals, recurring, accounts, recurringCost, onAddGoal, onAddRecurring, onToggleRecurring, onEditGoal, onEditRecurring, goalContribution, setGoalContribution, contributionAmount, setContributionAmount, fundGoal }: {
   goals: Goal[];
   recurring: RecurringItem[];
   accounts: Account[];
@@ -1168,6 +1433,8 @@ function PlansView({ goals, recurring, accounts, recurringCost, onAddGoal, onAdd
   onAddGoal: () => void;
   onAddRecurring: () => void;
   onToggleRecurring: (id: string) => void;
+  onEditGoal: (goal: Goal) => void;
+  onEditRecurring: (item: RecurringItem) => void;
   goalContribution: string | null;
   setGoalContribution: (id: string | null) => void;
   contributionAmount: string;
@@ -1192,6 +1459,7 @@ function PlansView({ goals, recurring, accounts, recurringCost, onAddGoal, onAdd
             contributionAmount={contributionAmount}
             setContributionAmount={setContributionAmount}
             fundGoal={() => fundGoal(goal.id)}
+            onEdit={() => onEditGoal(goal)}
           />
         ))}
         {!goals.length && <EmptyState icon={<Target />} title="No goals in this view" copy="Create a personal or shared milestone." />}
@@ -1199,7 +1467,7 @@ function PlansView({ goals, recurring, accounts, recurringCost, onAddGoal, onAdd
 
       <div className="section-heading plans-recurring-heading"><div><p className="eyebrow">Predictable spending</p><h2>Recurring payments</h2></div><span>{formatMoney(recurringCost)}/month</span></div>
       <section className="panel recurring-table">
-        <div className="recurring-table-head"><span>Payment</span><span>Paid from</span><span>Next date</span><span>Amount</span><span>Status</span></div>
+        <div className="recurring-table-head"><span>Payment</span><span>Paid from</span><span>Next date</span><span>Amount</span><span>Actions</span></div>
         {recurring.map((item) => {
           const account = accounts.find((candidate) => candidate.id === item.accountId);
           return (
@@ -1208,10 +1476,11 @@ function PlansView({ goals, recurring, accounts, recurringCost, onAddGoal, onAdd
               <span>{account?.name || "Unknown"}</span>
               <span>{formatDate(item.nextDate, true)}</span>
               <strong>{formatMoney(item.amount)}</strong>
-              <button className={item.active ? "status-toggle active" : "status-toggle"} onClick={() => onToggleRecurring(item.id)} aria-label={`${item.active ? "Pause" : "Resume"} ${item.name}`}><i /></button>
+              <span className="item-actions"><button className="edit-item-button" onClick={() => onEditRecurring(item)} aria-label={`Edit ${item.name}`}><Edit3 size={16} /></button><button className={item.active ? "status-toggle active" : "status-toggle"} onClick={() => onToggleRecurring(item.id)} aria-label={`${item.active ? "Pause" : "Resume"} ${item.name}`}><i /></button></span>
             </div>
           );
         })}
+        {!recurring.length && <EmptyState icon={<Repeat2 />} title="Nothing recurring yet" copy="Add subscriptions, bills, memberships, and annual renewals." />}
       </section>
     </div>
   );
@@ -1300,7 +1569,7 @@ function TransactionRow({ transaction, accounts, showSpace = false, onDelete, on
   );
 }
 
-function GoalCard({ goal, compact = false, contributionOpen, onContribution, contributionAmount, setContributionAmount, fundGoal }: {
+function GoalCard({ goal, compact = false, contributionOpen, onContribution, contributionAmount, setContributionAmount, fundGoal, onEdit }: {
   goal: Goal;
   compact?: boolean;
   contributionOpen: boolean;
@@ -1308,12 +1577,13 @@ function GoalCard({ goal, compact = false, contributionOpen, onContribution, con
   contributionAmount: string;
   setContributionAmount: (value: string) => void;
   fundGoal: () => void;
+  onEdit?: () => void;
 }) {
   const progress = Math.min(100, (goal.current / goal.target) * 100);
   const Icon = goal.icon === "home" ? Home : goal.icon === "shield" ? ShieldCheck : Sparkles;
   return (
     <article className={compact ? "goal-card compact-goal" : "goal-card"}>
-      <div className="goal-card-top"><span className="goal-icon"><Icon size={19} /></span><span className="space-badge">{goal.space === "household" ? <Users size={13} /> : <UserRound size={13} />}{goal.space === "household" ? "Shared" : "Personal"}</span></div>
+      <div className="goal-card-top"><span className="goal-icon"><Icon size={19} /></span><span className="goal-card-tools"><span className="space-badge">{goal.space === "household" ? <Users size={13} /> : <UserRound size={13} />}{goal.space === "household" ? "Shared" : "Personal"}</span>{onEdit && <button className="edit-item-button" onClick={onEdit} aria-label={`Edit ${goal.name}`}><Edit3 size={15} /></button>}</span></div>
       {!compact && <h3>{goal.name}</h3>}
       <div className="goal-numbers"><strong>{formatMoney(goal.current)}</strong><span>of {formatMoney(goal.target)}</span></div>
       <div className="goal-progress"><i style={{ width: `${progress}%` }} /></div>
@@ -1334,13 +1604,34 @@ function EmptyState({ icon, title, copy }: { icon: React.ReactNode; title: strin
 }
 
 function ModalShell({ title, eyebrow, onClose, children }: { title: string; eyebrow: string; onClose: () => void; children: React.ReactNode }) {
+  const titleId = React.useId();
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [onClose]);
+
   return (
-    <div className="modal-backdrop" role="presentation">
-      <section className="modal-sheet" role="dialog" aria-modal="true" aria-label={title}>
-        <header><div><p className="eyebrow">{eyebrow}</p><h2>{title}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close"><X size={20} /></button></header>
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="modal-sheet" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+        <header><div><p className="eyebrow">{eyebrow}</p><h2 id={titleId}>{title}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close"><X size={20} /></button></header>
         {children}
       </section>
     </div>
+  );
+}
+
+function ConfirmationModal({ confirmation, onClose, onConfirm }: { confirmation: Confirmation; onClose: () => void; onConfirm: () => void }) {
+  return (
+    <ModalShell eyebrow="Please confirm" title={confirmation.title} onClose={onClose}>
+      <div className="confirmation-copy"><span><Trash2 size={22} /></span><p>{confirmation.copy}</p></div>
+      <div className="form-actions"><button className="secondary-button" onClick={onClose}>Keep it</button><button className="primary-button destructive-button" onClick={onConfirm}>{confirmation.actionLabel}</button></div>
+    </ModalShell>
   );
 }
 
@@ -1509,7 +1800,7 @@ function TransactionModal({ initial, accounts, scope, onClose, onSubmit }: { ini
   );
 }
 
-function AccountModal({ initial, scope, profileName, partnerName, onClose, onSubmit }: { initial?: Account | null; scope: ViewScope; profileName: string; partnerName: string; onClose: () => void; onSubmit: (account: Account) => void }) {
+function AccountModal({ initial, scope, profileName, partnerName, onClose, onSubmit, onDelete }: { initial?: Account | null; scope: ViewScope; profileName: string; partnerName: string; onClose: () => void; onSubmit: (account: Account) => void; onDelete?: () => void }) {
   const [name, setName] = useState(initial?.name || "");
   const [institution, setInstitution] = useState(initial?.institution || "");
   const [type, setType] = useState<AccountType>(initial?.type || "checking");
@@ -1536,7 +1827,7 @@ function AccountModal({ initial, scope, profileName, partnerName, onClose, onSub
           <label className="field"><span>Belongs to</span><select value={space} onChange={(event) => setSpace(event.target.value as SpaceId)}><option value="personal">Personal</option><option value="household">Household</option></select></label>
           <label className="field"><span>Last four digits (optional)</span><input maxLength={4} inputMode="numeric" value={last4} onChange={(event) => setLast4(event.target.value.replace(/\D/g, ""))} placeholder="2841" /></label>
         </div>
-        <div className="form-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">{initial ? "Save changes" : "Add account"}</button></div>
+        <div className="form-actions">{initial && onDelete && <button type="button" className="secondary-button danger-button form-delete-button" onClick={onDelete}><Trash2 size={16} /> Remove</button>}<span className="form-action-spacer" /><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">{initial ? "Save changes" : "Add account"}</button></div>
       </form>
     </ModalShell>
   );
@@ -1587,25 +1878,25 @@ function HouseholdModal({ profile, viewerEmail, onClose, onSubmit }: { profile: 
   );
 }
 
-function GoalModal({ scope, onClose, onSubmit }: { scope: ViewScope; onClose: () => void; onSubmit: (goal: Goal) => void }) {
-  const [name, setName] = useState("");
-  const [target, setTarget] = useState("");
-  const [current, setCurrent] = useState("");
-  const [targetDate, setTargetDate] = useState("");
-  const [monthlyContribution, setMonthlyContribution] = useState("");
-  const [priority, setPriority] = useState<NonNullable<Goal["priority"]>>("important");
-  const [space, setSpace] = useState<SpaceId>(scope === "household" ? "household" : "personal");
+function GoalModal({ initial, scope, onClose, onSubmit, onDelete }: { initial?: Goal | null; scope: ViewScope; onClose: () => void; onSubmit: (goal: Goal) => void; onDelete?: () => void }) {
+  const [name, setName] = useState(initial?.name || "");
+  const [target, setTarget] = useState(initial ? String(initial.target) : "");
+  const [current, setCurrent] = useState(initial ? String(initial.current) : "");
+  const [targetDate, setTargetDate] = useState(initial?.targetDate || "");
+  const [monthlyContribution, setMonthlyContribution] = useState(initial?.monthlyContribution ? String(initial.monthlyContribution) : "");
+  const [priority, setPriority] = useState<NonNullable<Goal["priority"]>>(initial?.priority || "important");
+  const [space, setSpace] = useState<SpaceId>(initial?.space || (scope === "household" ? "household" : "personal"));
 
   function submit(event: FormEvent) {
     event.preventDefault();
     const targetAmount = Number(target);
     const currentAmount = Number(current || 0);
-    if (!name.trim() || !targetDate || targetAmount <= 0) return;
-    onSubmit({ id: uid("goal"), name: name.trim(), target: targetAmount, current: currentAmount, targetDate, space, icon: space === "household" ? "home" : "spark", monthlyContribution: Math.max(0, Number(monthlyContribution) || 0), priority });
+    if (!name.trim() || !targetDate || !Number.isFinite(targetAmount) || targetAmount <= 0 || !Number.isFinite(currentAmount)) return;
+    onSubmit({ id: initial?.id || uid("goal"), name: name.trim(), target: targetAmount, current: Math.min(targetAmount, Math.max(0, currentAmount)), targetDate, space, icon: initial?.icon || (space === "household" ? "home" : "spark"), monthlyContribution: Math.max(0, Number(monthlyContribution) || 0), priority });
   }
 
   return (
-    <ModalShell eyebrow="A future worth funding" title="Create a goal" onClose={onClose}>
+    <ModalShell eyebrow="A future worth funding" title={initial ? "Edit goal" : "Create a goal"} onClose={onClose}>
       <form className="form-stack" onSubmit={submit}>
         <div className="form-grid">
           <label className="field full-field"><span>Goal name</span><input autoFocus required value={name} onChange={(event) => setName(event.target.value)} placeholder="What are you building toward?" /></label>
@@ -1616,44 +1907,59 @@ function GoalModal({ scope, onClose, onSubmit }: { scope: ViewScope; onClose: ()
           <label className="field"><span>Priority</span><select value={priority} onChange={(event) => setPriority(event.target.value as NonNullable<Goal["priority"]>)}><option value="essential">Essential</option><option value="important">Important</option><option value="flexible">Flexible</option></select></label>
           <label className="field"><span>Goal space</span><select value={space} onChange={(event) => setSpace(event.target.value as SpaceId)}><option value="personal">Personal</option><option value="household">Household</option></select></label>
         </div>
-        <div className="form-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">Create goal</button></div>
+        <div className="form-actions">{initial && onDelete && <button type="button" className="secondary-button danger-button form-delete-button" onClick={onDelete}><Trash2 size={16} /> Delete</button>}<span className="form-action-spacer" /><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">{initial ? "Save changes" : "Create goal"}</button></div>
       </form>
     </ModalShell>
   );
 }
 
-function PlannedEventModal({ scope, onClose, onSubmit }: { scope: ViewScope; onClose: () => void; onSubmit: (event: PlannedEvent) => void }) {
-  const [name, setName] = useState("");
-  const [amount, setAmount] = useState("");
-  const [date, setDate] = useState("");
-  const [kind, setKind] = useState<PlannedEvent["kind"]>("travel");
-  const [space, setSpace] = useState<SpaceId>(scope === "household" ? "household" : "personal");
-  const [note, setNote] = useState("");
+function PlannedEventModal({ initial, scope, onClose, onSubmit, onDelete }: { initial?: PlannedEvent | null; scope: ViewScope; onClose: () => void; onSubmit: (event: PlannedEvent) => void; onDelete?: () => void }) {
+  const [name, setName] = useState(initial?.name || "");
+  const [amount, setAmount] = useState(initial ? String(initial.amount) : "");
+  const [date, setDate] = useState(initial?.date || "");
+  const [kind, setKind] = useState<PlannedEvent["kind"]>(initial?.kind || "travel");
+  const [space, setSpace] = useState<SpaceId>(initial?.space || (scope === "household" ? "household" : "personal"));
+  const [note, setNote] = useState(initial?.note || "");
   function submit(event: FormEvent) {
-    event.preventDefault(); const parsed = Number(amount); if (!name.trim() || !date || parsed <= 0) return;
-    onSubmit({ id: uid("event"), name: name.trim(), amount: parsed, date, kind, space, includeInPlan: true, note: note.trim() || undefined });
+    event.preventDefault(); const parsed = Number(amount); if (!name.trim() || !date || !Number.isFinite(parsed) || parsed <= 0) return;
+    onSubmit({ id: initial?.id || uid("event"), name: name.trim(), amount: parsed, date, kind, space, includeInPlan: initial?.includeInPlan ?? true, note: note.trim() || undefined });
   }
-  return <ModalShell eyebrow="Life happens in the forecast" title="Plan a future event" onClose={onClose}><form className="form-stack" onSubmit={submit}><div className="form-grid"><label className="field full-field"><span>What are you planning?</span><input autoFocus required value={name} onChange={(event) => setName(event.target.value)} placeholder="Japan in spring" /></label><label className="field"><span>Estimated total cost</span><input required type="number" min="1" step="1" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="12000" /></label><label className="field"><span>When</span><input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label className="field"><span>Kind of plan</span><select value={kind} onChange={(event) => setKind(event.target.value as PlannedEvent["kind"])}><option value="travel">Travel</option><option value="home">Home</option><option value="family">Family</option><option value="education">Education</option><option value="car">Car</option><option value="other">Other</option></select></label><label className="field"><span>Plan space</span><select value={space} onChange={(event) => setSpace(event.target.value as SpaceId)}><option value="personal">Personal</option><option value="household">Household</option></select></label><label className="field full-field"><span>Assumptions or notes</span><input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Flights, hotels, food and shopping" /></label></div><div className="info-note"><WandSparkles size={17} /><span>Lifetime will compare this cost with your monthly surplus and goal contributions, then show the estimated timing trade-off.</span></div><div className="form-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">Add to forecast</button></div></form></ModalShell>;
+  return (
+    <ModalShell eyebrow="Life happens in the forecast" title={initial ? "Edit future event" : "Plan a future event"} onClose={onClose}>
+      <form className="form-stack" onSubmit={submit}>
+        <div className="form-grid">
+          <label className="field full-field"><span>What are you planning?</span><input autoFocus required value={name} onChange={(event) => setName(event.target.value)} placeholder="Japan in spring" /></label>
+          <label className="field"><span>Estimated total cost</span><input required type="number" min="1" step="1" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="12000" /></label>
+          <label className="field"><span>When</span><input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
+          <label className="field"><span>Kind of plan</span><select value={kind} onChange={(event) => setKind(event.target.value as PlannedEvent["kind"])}><option value="travel">Travel</option><option value="home">Home</option><option value="family">Family</option><option value="education">Education</option><option value="car">Car</option><option value="other">Other</option></select></label>
+          <label className="field"><span>Plan space</span><select value={space} onChange={(event) => setSpace(event.target.value as SpaceId)}><option value="personal">Personal</option><option value="household">Household</option></select></label>
+          <label className="field full-field"><span>Assumptions or notes</span><input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Flights, hotels, food and shopping" /></label>
+        </div>
+        <div className="info-note"><WandSparkles size={17} /><span>Lifetime compares this cost with your monthly surplus and goal contributions, then shows the estimated timing trade-off.</span></div>
+        <div className="form-actions">{initial && onDelete && <button type="button" className="secondary-button danger-button form-delete-button" onClick={onDelete}><Trash2 size={16} /> Delete</button>}<span className="form-action-spacer" /><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">{initial ? "Save changes" : "Add to forecast"}</button></div>
+      </form>
+    </ModalShell>
+  );
 }
 
-function RecurringModal({ scope, accounts, onClose, onSubmit }: { scope: ViewScope; accounts: Account[]; onClose: () => void; onSubmit: (item: RecurringItem) => void }) {
-  const [name, setName] = useState("");
-  const [amount, setAmount] = useState("");
-  const [cadence, setCadence] = useState<RecurringItem["cadence"]>("monthly");
-  const [nextDate, setNextDate] = useState("");
-  const [accountId, setAccountId] = useState(accounts[0]?.id || "");
-  const [category, setCategory] = useState(expenseCategories[0]);
+function RecurringModal({ initial, scope, accounts, onClose, onSubmit, onDelete }: { initial?: RecurringItem | null; scope: ViewScope; accounts: Account[]; onClose: () => void; onSubmit: (item: RecurringItem) => void; onDelete?: () => void }) {
+  const [name, setName] = useState(initial?.name || "");
+  const [amount, setAmount] = useState(initial ? String(initial.amount) : "");
+  const [cadence, setCadence] = useState<RecurringItem["cadence"]>(initial?.cadence || "monthly");
+  const [nextDate, setNextDate] = useState(initial?.nextDate || "");
+  const [accountId, setAccountId] = useState(initial?.accountId || accounts[0]?.id || "");
+  const [category, setCategory] = useState(initial?.category || expenseCategories[0]);
   const selectedAccount = accounts.find((account) => account.id === accountId);
 
   function submit(event: FormEvent) {
     event.preventDefault();
     const parsed = Number(amount);
-    if (!name.trim() || !nextDate || !accountId || parsed <= 0) return;
-    onSubmit({ id: uid("recurring"), name: name.trim(), amount: parsed, cadence, nextDate, accountId, category, space: selectedAccount?.space || (scope === "household" ? "household" : "personal"), active: true });
+    if (!name.trim() || !nextDate || !accountId || !Number.isFinite(parsed) || parsed <= 0) return;
+    onSubmit({ id: initial?.id || uid("recurring"), name: name.trim(), amount: parsed, cadence, nextDate, accountId, category, space: selectedAccount?.space || (scope === "household" ? "household" : "personal"), active: initial?.active ?? true });
   }
 
   return (
-    <ModalShell eyebrow="Predict what’s next" title="Add recurring payment" onClose={onClose}>
+    <ModalShell eyebrow="Predict what’s next" title={initial ? "Edit recurring payment" : "Add recurring payment"} onClose={onClose}>
       <form className="form-stack" onSubmit={submit}>
         <div className="form-grid">
           <label className="field"><span>Name</span><input autoFocus required value={name} onChange={(event) => setName(event.target.value)} placeholder="Phone plan" /></label>
@@ -1663,14 +1969,14 @@ function RecurringModal({ scope, accounts, onClose, onSubmit }: { scope: ViewSco
           <label className="field"><span>Paid from</span><select value={accountId} onChange={(event) => setAccountId(event.target.value)}>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
           <label className="field"><span>Category</span><select value={category} onChange={(event) => setCategory(event.target.value)}>{expenseCategories.map((item) => <option key={item}>{item}</option>)}</select></label>
         </div>
-        <div className="form-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">Add recurring payment</button></div>
+        <div className="form-actions">{initial && onDelete && <button type="button" className="secondary-button danger-button form-delete-button" onClick={onDelete}><Trash2 size={16} /> Delete</button>}<span className="form-action-spacer" /><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">{initial ? "Save changes" : "Add recurring payment"}</button></div>
       </form>
     </ModalShell>
   );
 }
 
-function ImportModal({ data, scope, onClose, setData, notify }: { data: FinanceData; scope: ViewScope; onClose: () => void; setData: React.Dispatch<React.SetStateAction<FinanceData>>; notify: (message: string) => void }) {
-  const [text, setText] = useState("date,description,amount,type,category,account\n2026-08-14,Coffee,6.50,expense,Food & dining,Everyday");
+function ImportModal({ data, scope, onClose, setData, onStage, notify }: { data: FinanceData; scope: ViewScope; onClose: () => void; setData: React.Dispatch<React.SetStateAction<FinanceData>>; onStage: (transactions: Transaction[]) => void; notify: (message: string) => void }) {
+  const [text, setText] = useState("");
   const [report, setReport] = useState<ImportReport | null>(null);
 
   function importRows() {
@@ -1686,10 +1992,17 @@ function ImportModal({ data, scope, onClose, setData, notify }: { data: FinanceD
     if (!result.duplicates && !result.rejected.length) onClose();
   }
 
+  function reviewRows() {
+    const result = importTransactions(text, { accounts: data.accounts, existing: data.transactions, scope });
+    setReport(result);
+    if (result.error || !result.accepted.length) return;
+    onStage(result.accepted);
+  }
+
   return (
     <ModalShell eyebrow="Sheets and statements" title="Import transactions" onClose={onClose}>
       <div className="import-copy"><span className="import-icon"><FileSpreadsheet size={22} /></span><div><strong>Paste rows from Google Sheets or a CSV</strong><p>Use the columns date, description, amount, type, category, and account. Negative amounts become expenses when type is blank. Rows matching a transaction you already have are skipped.</p></div></div>
-      <textarea className="import-textarea" value={text} onChange={(event) => { setText(event.target.value); setReport(null); }} aria-label="Transaction CSV data" />
+      <textarea className="import-textarea" value={text} onChange={(event) => { setText(event.target.value); setReport(null); }} placeholder={"date,description,amount,type,category,account\n2026-08-14,Coffee,6.50,expense,Food & dining,Everyday"} aria-label="Transaction CSV data" />
       <div className="info-note"><ShieldCheck size={17} /><span>Transfers are intentionally skipped here so they can be linked safely between two accounts in the ledger.</span></div>
       {report?.error && <p className="form-error">{report.error}</p>}
       {report && !report.error && (
@@ -1706,7 +2019,7 @@ function ImportModal({ data, scope, onClose, setData, notify }: { data: FinanceD
           )}
         </div>
       )}
-      <div className="form-actions"><button className="secondary-button" onClick={onClose}>{report && !report.error ? "Done" : "Cancel"}</button><button className="primary-button" onClick={importRows}>Import rows</button></div>
+      <div className="form-actions"><button className="secondary-button" onClick={onClose}>{report && !report.error ? "Done" : "Cancel"}</button><span className="form-action-spacer" /><button className="secondary-button" onClick={reviewRows}><Layers3 size={16} /> Review first</button><button className="primary-button" onClick={importRows}>Import all</button></div>
     </ModalShell>
   );
 }

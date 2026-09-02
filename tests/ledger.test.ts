@@ -6,6 +6,7 @@ import {
   applyTransaction,
   buildForecast,
   createEmptyFinanceData,
+  isFinanceData,
   monthKey,
 } from "@/lib/finance";
 
@@ -17,6 +18,15 @@ describe("first-run workspace", () => {
     expect(data.transactions).toEqual([]);
     expect(data.goals).toEqual([]);
     expect(data.recurring).toEqual([]);
+  });
+
+  it("accepts complete backups and rejects partial workspace files", () => {
+    const data = createEmptyFinanceData({ name: "Aditya", householdName: "Vaidya household" });
+    expect(isFinanceData(data)).toBe(true);
+    expect(isFinanceData({ version: 3, profile: data.profile, accounts: [], transactions: [] })).toBe(false);
+    expect(isFinanceData({ ...data, accounts: [null] })).toBe(false);
+    expect(isFinanceData({ ...data, transactions: [{ amount: "not-a-number" }] })).toBe(false);
+    expect(isFinanceData(null)).toBe(false);
   });
 });
 

@@ -1,5 +1,5 @@
 import type { User } from "@supabase/supabase-js";
-import type { FinanceData, SpaceId } from "@/lib/finance";
+import { isFinanceData, type FinanceData, type SpaceId } from "@/lib/finance";
 import { getAuthenticatedUser } from "@/lib/supabase/server";
 
 type SpaceRow = {
@@ -151,8 +151,8 @@ export async function POST(request: Request) {
   const { supabase, user } = await getAuthenticatedUser();
   if (!supabase || !user) return apiError("Sign in required", 401);
   try {
-    const data = await request.json() as FinanceData;
-    if (data.version !== 3 || !Array.isArray(data.accounts) || !Array.isArray(data.transactions)) return apiError("Invalid finance workspace", 400);
+    const data: unknown = await request.json();
+    if (!isFinanceData(data)) return apiError("Invalid finance workspace", 400);
     if (JSON.stringify(data).length > 2_000_000) return apiError("Workspace is too large", 413);
 
     await ensureProfile(supabase, user);

@@ -7,12 +7,14 @@ Lifetime is a mobile-first personal and household finance hub. Personal records 
 - Google sign-in through Supabase Auth
 - Per-user personal workspaces and shared household workspaces
 - Postgres Row Level Security for personal, member, viewer, and owner access
-- Account and transaction editing with reversible balance changes
+- Complete account, transaction, goal, recurring-payment, and future-event editing
+- Safe deletions with clear confirmation and transfer-aware balance reversal
 - Transfers excluded from income, spending, and cash-flow totals
-- CSV/Google Sheets paste import with quoted-field parsing, validation, and deduplication
+- CSV/Google Sheets paste import with quoted-field parsing, validation, deduplication, and an optional review inbox
+- Downloadable and restorable private workspace backups
 - Deterministic cash-flow, resilience, goal, and planned-event forecasts
 - Optional Qwen coaching and speech recognition
-- Responsive installable web experience for desktop and mobile browsers
+- Responsive installable web experience with touch-sized mobile controls and reduced-motion support
 - Netlify-compatible Next.js production build
 
 New accounts start empty. No fictional balances or transactions are saved to a user workspace.
